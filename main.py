@@ -22,7 +22,7 @@ import re
 import xml.sax.saxutils as saxutils
 from typing import Optional
 from anthropic import AsyncAnthropic
-from deepgram import DeepgramClient, LiveTranscriptionEvents, LiveOptions
+from deepgram import DeepgramClient, DeepgramClientOptions, LiveTranscriptionEvents, LiveOptions
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
@@ -51,7 +51,7 @@ HOST = os.getenv("HOST", "")  # Railway domain, e.g. myapp.up.railway.app
 
 # Clients
 twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-dg_client = DeepgramClient(DEEPGRAM_API_KEY)
+dg_client = DeepgramClient(DEEPGRAM_API_KEY, DeepgramClientOptions(options={"keepalive": "true"}))
 anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 app = FastAPI()
@@ -197,7 +197,8 @@ async def media_stream(websocket: WebSocket):
     call_sid: Optional[str] = None
 
     # -- Deepgram connection --------------------------------------------------
-    dg_connection = dg_client.listen.asyncwebsocket.v("1")
+    # Use asynclive (stable across deepgram-sdk v3.x)
+    dg_connection = dg_client.listen.asynclive.v("1")
 
     # Flag to prevent double-processing while we're already responding
     is_processing = False
@@ -207,7 +208,10 @@ async def media_stream(websocket: WebSocket):
         nonlocal is_processing
 
         try:
-            transcript = result.channel.alternatives[0].transcript.strip()
+            alternatives = result.channel.alternatives
+            if not alternatives:
+                return
+            transcript = alternatives[0].transcript.strip()
 
             # Only act on speech_final events with actual content
             if not result.speech_final or not transcript:
@@ -241,19 +245,39 @@ async def media_stream(websocket: WebSocket):
             log.exception(f"Error in on_transcript: {exc}")
             is_processing = False
 
+    async def on_error(self, error, **kwargs):
+        log.error(f"Deepgram error: {error}")
+
     dg_connection.on(LiveTranscriptionEvents.Transcript, on_transcript)
+    dg_connection.on(LiveTranscriptionEvents.Error, on_error)
 
     # Deepgram options: mu-law 8 kHz to match Twilio's media stream
     dg_options = LiveOptions(
         encoding="mulaw",
         sample_rate=8000,
+        channels=1,
         model="nova-2",
         endpointing=400,       # ms of silence before declaring end-of-utterance
         smart_format=True,
     )
 
-    await dg_connection.start(dg_options)
-    log.info("Deepgram connection started")
+    # Start Deepgram — must be inside try/except; a failure here would otherwise
+    # crash the WebSocket handler and cause Twilio to silently hang up the call.
+    try:
+        started = await asyncio.wait_for(dg_connection.start(dg_options), timeout=10.0)
+        if not started:
+            raise RuntimeError("dg_connection.start() returned False")
+        log.info("Deepgram connection started successfully")
+    except Exception as exc:
+        log.exception(f"Deepgram failed to start: {exc}")
+        # Speak an error instead of silently hanging up
+        await asyncio.to_thread(
+            lambda: twilio_client.calls(call_sid or "").update(
+                twiml="<Response><Say>Sorry, I'm having a technical issue. Please call back in a moment.</Say><Hangup/></Response>"
+            ) if call_sid else None
+        )
+        await websocket.close()
+        return
 
     # -- Main WebSocket loop --------------------------------------------------
     try:
