@@ -196,7 +196,7 @@ async def voice_webhook(request: Request):
         "Could I start by getting your full name please?"
     )
 
-    twiml = build_twiml(greeting, reconnect=True, host=effective_host)
+    twiml = build_twiml(greeting, reconnect=True, host=HOST)
     log.info(f"[{call_sid}] Returning TwiML:\n{twiml}")
     return Response(content=twiml, media_type="application/xml")
 
