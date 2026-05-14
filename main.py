@@ -22,8 +22,9 @@ import re
 import xml.sax.saxutils as saxutils
 from typing import Optional
 
+import websockets
+import websockets.exceptions
 from anthropic import AsyncAnthropic
-from deepgram import DeepgramClient, DeepgramClientOptions, LiveTranscriptionEvents, LiveOptions
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, PlainTextResponse
@@ -50,9 +51,15 @@ ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
 PLUMBER_PHONE_NUMBER = os.getenv("PLUMBER_PHONE_NUMBER", "")
 HOST = "ai-plumber-receptionist-production.up.railway.app"  # Railway deployment URL
 
+# Deepgram WebSocket URL — connect directly, no SDK
+DEEPGRAM_URL = (
+    "wss://api.deepgram.com/v1/listen"
+    "?encoding=mulaw&sample_rate=8000&channels=1"
+    "&model=nova-2&smart_format=true&endpointing=400"
+)
+
 # Clients
 twilio_client    = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-dg_client        = DeepgramClient(DEEPGRAM_API_KEY, DeepgramClientOptions(options={"keepalive": "true"}))
 anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 app = FastAPI()
@@ -147,6 +154,7 @@ async def on_startup():
     log.info(f"  TWILIO_AUTH_TOKEN    : {'SET' if TWILIO_AUTH_TOKEN    else 'MISSING'}")
     log.info(f"  TWILIO_PHONE_NUMBER  : {TWILIO_PHONE_NUMBER  or 'MISSING'}")
     log.info(f"  DEEPGRAM_API_KEY     : {'SET' if DEEPGRAM_API_KEY     else 'MISSING'}")
+    log.info(f"  DEEPGRAM_URL         : {DEEPGRAM_URL}")
     log.info(f"  ANTHROPIC_API_KEY    : {'SET' if ANTHROPIC_API_KEY    else 'MISSING'}")
     log.info(f"  PLUMBER_PHONE_NUMBER : {PLUMBER_PHONE_NUMBER or 'MISSING'}")
     log.info(f"  HOST                 : {HOST}")
@@ -203,161 +211,148 @@ async def voice_webhook(request: Request):
 
 @app.websocket("/media-stream")
 async def media_stream(websocket: WebSocket):
-    """Handle Twilio media stream — STT via Deepgram, conversation via Claude."""
+    """Handle Twilio media stream — raw WebSocket to Deepgram, conversation via Claude."""
 
-    # Log before accept so we know the route was reached even if accept fails
     log.info(">>> /media-stream WebSocket connection attempt received")
-
     try:
         await websocket.accept()
     except Exception as exc:
         log.exception(f"WebSocket accept() failed: {exc}")
         return
-
     log.info(">>> /media-stream WebSocket accepted successfully")
 
     call_sid: Optional[str] = None
     is_processing = False
 
-    # -- Deepgram setup -------------------------------------------------------
+    # -- Connect directly to Deepgram (no SDK) --------------------------------
+    log.info(f"Connecting to Deepgram: {DEEPGRAM_URL}")
     try:
-        dg_connection = dg_client.listen.asynclive.v("1")
-        log.info("Deepgram asynclive connection object created")
+        dg_ws = await websockets.connect(
+            DEEPGRAM_URL,
+            extra_headers={"Authorization": f"Token {DEEPGRAM_API_KEY}"},
+        )
+        log.info("Connected to Deepgram WebSocket successfully")
     except Exception as exc:
-        log.exception(f"Failed to create Deepgram connection object: {exc}")
+        log.exception(f"Failed to connect to Deepgram: {exc}")
         await websocket.close(code=1011)
         return
 
-    async def on_transcript(self, result, **kwargs):
+    # -- Task 1: receive audio from Twilio, forward to Deepgram ---------------
+    async def receive_from_twilio():
+        nonlocal call_sid, is_processing
+        chunks = 0
+        try:
+            async for raw in websocket.iter_text():
+                try:
+                    data = json.loads(raw)
+                except json.JSONDecodeError:
+                    continue
+
+                event = data.get("event")
+
+                if event == "connected":
+                    log.info(f"Twilio: connected — protocol={data.get('protocol')}")
+
+                elif event == "start":
+                    call_sid   = data["start"].get("callSid")
+                    stream_sid = data["start"].get("streamSid")
+                    log.info(f"Twilio: start — CallSid={call_sid} StreamSid={stream_sid}")
+                    log.info(f"Twilio: mediaFormat={data['start'].get('mediaFormat')}")
+                    if call_sid and call_sid in sessions:
+                        sessions[call_sid]["is_responding"] = False
+                    is_processing = False
+
+                elif event == "media":
+                    session = sessions.get(call_sid) if call_sid else None
+                    if session and not session.get("is_responding"):
+                        audio_bytes = base64.b64decode(data["media"]["payload"])
+                        await dg_ws.send(audio_bytes)
+                        chunks += 1
+                        if chunks == 1:
+                            log.info(f"[{call_sid}] First audio chunk sent to Deepgram")
+                        elif chunks % 500 == 0:
+                            log.info(f"[{call_sid}] Audio chunks sent to Deepgram: {chunks}")
+
+                elif event == "stop":
+                    log.info(f"Twilio: stop — CallSid={call_sid} chunks={chunks}")
+                    break
+
+                else:
+                    log.debug(f"Twilio: unknown event {event!r}")
+
+        except WebSocketDisconnect:
+            log.info(f"[{call_sid}] Twilio WebSocket disconnected")
+        except Exception as exc:
+            log.exception(f"[{call_sid}] Error in receive_from_twilio: {exc}")
+        finally:
+            # Close Deepgram when Twilio side ends
+            try:
+                await dg_ws.close()
+            except Exception:
+                pass
+
+    # -- Task 2: receive transcripts from Deepgram, call Claude ---------------
+    async def receive_from_deepgram():
         nonlocal is_processing
         try:
-            alternatives = result.channel.alternatives
-            if not alternatives:
-                return
-            transcript = alternatives[0].transcript.strip()
+            async for message in dg_ws:
+                try:
+                    result = json.loads(message)
+                except json.JSONDecodeError:
+                    continue
 
-            if not result.speech_final or not transcript:
-                return
+                msg_type = result.get("type")
 
-            log.info(f"[{call_sid}] speech_final transcript: {transcript!r}")
+                if msg_type == "Results":
+                    alts = result.get("channel", {}).get("alternatives", [])
+                    if not alts:
+                        continue
+                    transcript   = alts[0].get("transcript", "").strip()
+                    speech_final = result.get("speech_final", False)
 
-            if is_processing:
-                log.info(f"[{call_sid}] Skipping — already processing")
-                return
+                    if not speech_final or not transcript:
+                        continue
 
-            session = sessions.get(call_sid)
-            if not session:
-                log.warning(f"[{call_sid}] No session found for transcript")
-                return
-            if session.get("is_responding"):
-                log.info(f"[{call_sid}] Skipping — is_responding")
-                return
-            if session.get("is_complete"):
-                return
+                    log.info(f"[{call_sid}] Deepgram speech_final: {transcript!r}")
 
-            is_processing = True
-            try:
-                await handle_transcript(call_sid, transcript)
-            finally:
-                is_processing = False
+                    if is_processing:
+                        log.info(f"[{call_sid}] Skipping transcript — already processing")
+                        continue
 
+                    session = sessions.get(call_sid) if call_sid else None
+                    if not session:
+                        log.warning(f"[{call_sid}] No session for transcript")
+                        continue
+                    if session.get("is_responding") or session.get("is_complete"):
+                        continue
+
+                    is_processing = True
+                    try:
+                        await handle_transcript(call_sid, transcript)
+                    finally:
+                        is_processing = False
+
+                elif msg_type == "Metadata":
+                    log.info(f"Deepgram metadata: {result}")
+
+                elif msg_type == "Error":
+                    log.error(f"Deepgram error message: {result}")
+
+        except websockets.exceptions.ConnectionClosed as exc:
+            log.info(f"[{call_sid}] Deepgram connection closed: {exc}")
         except Exception as exc:
-            log.exception(f"on_transcript error: {exc}")
-            is_processing = False
+            log.exception(f"[{call_sid}] Error in receive_from_deepgram: {exc}")
 
-    async def on_open(self, open, **kwargs):
-        log.info("Deepgram WebSocket opened")
-
-    async def on_error(self, error, **kwargs):
-        log.error(f"Deepgram error event: {error}")
-
-    async def on_close(self, close, **kwargs):
-        log.info(f"Deepgram WebSocket closed: {close}")
-
-    dg_connection.on(LiveTranscriptionEvents.Open,       on_open)
-    dg_connection.on(LiveTranscriptionEvents.Transcript, on_transcript)
-    dg_connection.on(LiveTranscriptionEvents.Error,      on_error)
-    dg_connection.on(LiveTranscriptionEvents.Close,      on_close)
-
-    dg_options = LiveOptions(
-        encoding="mulaw",
-        sample_rate=8000,
-        channels=1,
-        model="nova-2",
-        endpointing=400,
-        smart_format=True,
-    )
-
-    log.info("Starting Deepgram live transcription...")
+    # -- Run both tasks concurrently ------------------------------------------
     try:
-        started = await asyncio.wait_for(dg_connection.start(dg_options), timeout=10.0)
-        if not started:
-            raise RuntimeError("dg_connection.start() returned False")
-        log.info("Deepgram live transcription started successfully")
-    except asyncio.TimeoutError:
-        log.error("Deepgram start() timed out after 10 s")
-        await websocket.close(code=1011)
-        return
+        await asyncio.gather(receive_from_twilio(), receive_from_deepgram())
     except Exception as exc:
-        log.exception(f"Deepgram start() failed: {exc}")
-        await websocket.close(code=1011)
-        return
-
-    # -- Main Twilio message loop ---------------------------------------------
-    log.info("Entering Twilio media stream message loop")
-    chunks_received = 0
-
-    try:
-        async for raw_message in websocket.iter_text():
-            try:
-                data = json.loads(raw_message)
-            except json.JSONDecodeError as exc:
-                log.warning(f"JSON decode error: {exc} — raw: {raw_message[:120]}")
-                continue
-
-            event = data.get("event")
-
-            if event == "connected":
-                log.info(f"Twilio: connected — protocol={data.get('protocol')} version={data.get('version')}")
-
-            elif event == "start":
-                call_sid   = data["start"].get("callSid")
-                stream_sid = data["start"].get("streamSid")
-                log.info(f"Twilio: start — CallSid={call_sid} StreamSid={stream_sid}")
-                log.info(f"Twilio: mediaFormat={data['start'].get('mediaFormat')}")
-                if call_sid and call_sid in sessions:
-                    sessions[call_sid]["is_responding"] = False
-                is_processing = False
-
-            elif event == "media":
-                chunks_received += 1
-                if chunks_received == 1:
-                    log.info(f"[{call_sid}] First audio chunk received — streaming to Deepgram")
-                elif chunks_received % 500 == 0:
-                    log.info(f"[{call_sid}] Audio chunks forwarded: {chunks_received}")
-
-                session = sessions.get(call_sid) if call_sid else None
-                if session and not session.get("is_responding"):
-                    audio_bytes = base64.b64decode(data["media"]["payload"])
-                    await dg_connection.send(audio_bytes)
-
-            elif event == "stop":
-                log.info(f"Twilio: stop — CallSid={call_sid} (total chunks: {chunks_received})")
-                break
-
-            else:
-                log.info(f"Twilio: unknown event {event!r}")
-
-    except WebSocketDisconnect:
-        log.info(f"[{call_sid}] WebSocket disconnected (total chunks: {chunks_received})")
-    except Exception as exc:
-        log.exception(f"[{call_sid}] Unexpected error in media stream loop: {exc}")
+        log.exception(f"[{call_sid}] Unexpected error in gather: {exc}")
     finally:
-        log.info(f"[{call_sid}] Cleaning up — closing Deepgram connection")
         try:
-            await dg_connection.finish()
-        except Exception as exc:
-            log.warning(f"dg_connection.finish() error (non-fatal): {exc}")
+            await dg_ws.close()
+        except Exception:
+            pass
         log.info(f"[{call_sid}] media_stream handler done")
 
 
