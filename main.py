@@ -373,7 +373,7 @@ async def handle_transcript(call_sid: str, transcript: str):
     try:
         response = await anthropic_client.messages.create(
             model="claude-opus-4-5",
-            max_tokens=512,
+            max_tokens=1024,
             system=SYSTEM_PROMPT,
             messages=session["messages"],
         )
@@ -383,30 +383,40 @@ async def handle_transcript(call_sid: str, transcript: str):
         return
 
     assistant_text = "".join(b.text for b in response.content if b.type == "text").strip()
-    log.info(f"[{call_sid}] Claude response: {assistant_text!r}")
+    log.info(f"[{call_sid}] Claude raw response ({len(assistant_text)} chars): {assistant_text!r}")
 
-    complete_match = re.search(r"COMPLETE:(\{.*?\})", assistant_text, re.DOTALL)
+    # Allow optional whitespace after colon; use greedy .* so the full JSON is captured
+    # even if it contains newlines or nested structures.
+    complete_match = re.search(r"COMPLETE:\s*(\{.*\})", assistant_text, re.DOTALL)
+
+    log.info(f"[{call_sid}] COMPLETE signal detected: {bool(complete_match)}")
 
     if complete_match:
-        json_str        = complete_match.group(1)
+        json_str        = complete_match.group(1).strip()
         closing_message = assistant_text[complete_match.end():].strip()
+        log.info(f"[{call_sid}] Raw JSON string from Claude: {json_str!r}")
+        log.info(f"[{call_sid}] Closing message: {closing_message!r}")
+
         if not closing_message:
             closing_message = "Thank you! We'll have a plumber contact you shortly. Have a great day!"
 
         try:
             collected = json.loads(json_str)
-        except json.JSONDecodeError:
-            log.error(f"[{call_sid}] Failed to parse COMPLETE JSON: {json_str!r}")
+            log.info(f"[{call_sid}] Parsed collected info: {collected}")
+        except json.JSONDecodeError as exc:
+            log.error(f"[{call_sid}] JSON parse failed: {exc} — raw: {json_str!r}")
             collected = {}
 
         session["is_complete"]    = True
         session["collected_info"] = collected
-        log.info(f"[{call_sid}] Collected info: {collected}")
 
+        log.info(f"[{call_sid}] Triggering SMS to PLUMBER_PHONE_NUMBER={PLUMBER_PHONE_NUMBER!r}")
         await send_sms_to_plumber(call_sid, collected, session["from_number"])
+
         session["messages"].append({"role": "assistant", "content": closing_message})
         await speak_and_update(call_sid, closing_message, reconnect=False, host=host)
     else:
+        log.info(f"[{call_sid}] No COMPLETE signal — continuing conversation")
         session["messages"].append({"role": "assistant", "content": assistant_text})
         await speak_and_update(call_sid, assistant_text, reconnect=True, host=host)
 
