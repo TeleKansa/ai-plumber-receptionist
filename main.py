@@ -21,11 +21,12 @@ import os
 import re
 import xml.sax.saxutils as saxutils
 from typing import Optional
+
 from anthropic import AsyncAnthropic
 from deepgram import DeepgramClient, DeepgramClientOptions, LiveTranscriptionEvents, LiveOptions
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
-from fastapi.responses import Response
+from fastapi.responses import Response, PlainTextResponse
 from twilio.rest import Client as TwilioClient
 
 # ---------------------------------------------------------------------------
@@ -41,17 +42,18 @@ logging.basicConfig(
 log = logging.getLogger("plumber-receptionist")
 
 # Environment variables
-TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID", "")
-TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN", "")
+TWILIO_ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID", "")
+TWILIO_AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN", "")
 TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
-DEEPGRAM_API_KEY = os.getenv("DEEPGRAM_API_KEY", "")
-ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY", "")
+DEEPGRAM_API_KEY    = os.getenv("DEEPGRAM_API_KEY", "")
+ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
 PLUMBER_PHONE_NUMBER = os.getenv("PLUMBER_PHONE_NUMBER", "")
-HOST = os.getenv("HOST", "")  # Railway domain, e.g. myapp.up.railway.app
+# HOST is optional — if unset we derive it from the incoming request at runtime
+HOST = os.getenv("HOST", "")
 
 # Clients
-twilio_client = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-dg_client = DeepgramClient(DEEPGRAM_API_KEY, DeepgramClientOptions(options={"keepalive": "true"}))
+twilio_client    = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+dg_client        = DeepgramClient(DEEPGRAM_API_KEY, DeepgramClientOptions(options={"keepalive": "true"}))
 anthropic_client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
 
 app = FastAPI()
@@ -59,14 +61,13 @@ app = FastAPI()
 # ---------------------------------------------------------------------------
 # In-memory session store  (keyed by Twilio call_sid)
 # ---------------------------------------------------------------------------
-
-# Each session:
 # {
 #   "messages":      list[dict]  — Claude conversation history
 #   "is_complete":   bool        — True once all 5 pieces are collected
 #   "collected_info":dict        — Parsed final data
 #   "from_number":   str         — Caller's phone number
-#   "is_responding": bool        — True while we're calling Twilio to speak
+#   "is_responding": bool        — True while Twilio is speaking / stream reconnecting
+#   "host":          str         — Effective hostname used for this call's WSS URL
 # }
 sessions: dict[str, dict] = {}
 
@@ -109,34 +110,62 @@ Important: Do NOT output the COMPLETE line until you truly have all 5 pieces con
 # ---------------------------------------------------------------------------
 
 def xml_escape(text: str) -> str:
-    """Escape text for safe inclusion in XML/TwiML."""
     return saxutils.escape(text, {'"': "&quot;", "'": "&apos;"})
 
 
-def build_twiml(text: str, reconnect: bool = True) -> str:
+def build_twiml(text: str, reconnect: bool, host: str) -> str:
     """
-    Build a TwiML response string.
-
-    If reconnect=True, after speaking the text Twilio will reconnect the
-    WebSocket media stream so we can continue the conversation.
-
-    If reconnect=False, Twilio speaks the text then hangs up.
+    Build TwiML to speak `text`.
+    reconnect=True  → reconnect the WebSocket stream after speaking (conversation continues)
+    reconnect=False → hang up after speaking (conversation complete)
     """
     escaped = xml_escape(text)
     if reconnect:
         return (
             f'<Response>'
             f'<Say voice="Polly.Joanna">{escaped}</Say>'
-            f'<Connect><Stream url="wss://{HOST}/media-stream"/></Connect>'
+            f'<Connect><Stream url="wss://{host}/media-stream"/></Connect>'
             f'</Response>'
         )
-    else:
-        return (
-            f'<Response>'
-            f'<Say voice="Polly.Joanna">{escaped}</Say>'
-            f'<Hangup/>'
-            f'</Response>'
-        )
+    return (
+        f'<Response>'
+        f'<Say voice="Polly.Joanna">{escaped}</Say>'
+        f'<Hangup/>'
+        f'</Response>'
+    )
+
+
+def resolve_host(request: Request) -> str:
+    """
+    Determine the public hostname to use in WebSocket URLs.
+    Preference order:
+      1. HOST env var (explicitly configured)
+      2. X-Forwarded-Host header (set by Railway's reverse proxy)
+      3. Host header from the request
+    """
+    if HOST:
+        return HOST
+    forwarded = request.headers.get("x-forwarded-host", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.headers.get("host", "")
+
+
+# ---------------------------------------------------------------------------
+# Startup diagnostics
+# ---------------------------------------------------------------------------
+
+@app.on_event("startup")
+async def on_startup():
+    log.info("=== AI Plumber Receptionist starting up ===")
+    log.info(f"  TWILIO_ACCOUNT_SID   : {'SET' if TWILIO_ACCOUNT_SID  else 'MISSING'}")
+    log.info(f"  TWILIO_AUTH_TOKEN    : {'SET' if TWILIO_AUTH_TOKEN    else 'MISSING'}")
+    log.info(f"  TWILIO_PHONE_NUMBER  : {TWILIO_PHONE_NUMBER  or 'MISSING'}")
+    log.info(f"  DEEPGRAM_API_KEY     : {'SET' if DEEPGRAM_API_KEY     else 'MISSING'}")
+    log.info(f"  ANTHROPIC_API_KEY    : {'SET' if ANTHROPIC_API_KEY    else 'MISSING'}")
+    log.info(f"  PLUMBER_PHONE_NUMBER : {PLUMBER_PHONE_NUMBER or 'MISSING'}")
+    log.info(f"  HOST env var         : {HOST or '(not set — will derive from request)'}")
+    log.info("===========================================")
 
 
 # ---------------------------------------------------------------------------
@@ -145,31 +174,40 @@ def build_twiml(text: str, reconnect: bool = True) -> str:
 
 @app.get("/health")
 async def health_check():
-    """Simple health check used by Railway and monitoring tools."""
-    return {"status": "ok"}
+    return {"status": "ok", "host_env": HOST or "(not set)"}
+
+
+@app.get("/media-stream")
+async def media_stream_probe():
+    """HTTP probe so we can confirm the /media-stream route is reachable before testing WSS."""
+    return PlainTextResponse("media-stream route is reachable (WebSocket upgrade required for normal use)")
 
 
 @app.post("/voice")
 async def voice_webhook(request: Request):
     """
-    Twilio calls this when a customer dials the plumber's number.
-    We respond with TwiML that:
-      1. Says a greeting
-      2. Opens a WebSocket media stream to /media-stream
+    Twilio webhook — called when a customer dials the plumber's number.
+    Responds with TwiML: speak a greeting, then open a WebSocket media stream.
     """
     form_data = await request.form()
-    call_sid = form_data.get("CallSid", "unknown")
-    from_number = form_data.get("From", "unknown")
+    call_sid    = form_data.get("CallSid", "unknown")
+    from_number = form_data.get("From",    "unknown")
 
-    log.info(f"Incoming call: CallSid={call_sid} From={from_number}")
+    effective_host = resolve_host(request)
 
-    # Initialise session for this call
+    log.info(f"[{call_sid}] Incoming call from {from_number}")
+    log.info(f"[{call_sid}] Effective host: {effective_host!r}  (HOST env={HOST!r})")
+
+    if not effective_host:
+        log.error(f"[{call_sid}] Cannot determine host — set the HOST environment variable in Railway!")
+
     sessions[call_sid] = {
-        "messages": [],
-        "is_complete": False,
+        "messages":      [],
+        "is_complete":   False,
         "collected_info": {},
-        "from_number": from_number,
+        "from_number":   from_number,
         "is_responding": False,
+        "host":          effective_host,
     }
 
     greeting = (
@@ -178,152 +216,169 @@ async def voice_webhook(request: Request):
         "Could I start by getting your full name please?"
     )
 
-    twiml = build_twiml(greeting, reconnect=True)
+    twiml = build_twiml(greeting, reconnect=True, host=effective_host)
+    log.info(f"[{call_sid}] Returning TwiML:\n{twiml}")
     return Response(content=twiml, media_type="application/xml")
 
 
 @app.websocket("/media-stream")
 async def media_stream(websocket: WebSocket):
-    """
-    Twilio streams mu-law 8 kHz audio here.
-    We:
-      1. Open a Deepgram live-transcription connection
-      2. Forward each audio chunk to Deepgram
-      3. On speech_final transcripts, run Claude and update the call
-    """
-    await websocket.accept()
-    log.info("WebSocket connection accepted")
+    """Handle Twilio media stream — STT via Deepgram, conversation via Claude."""
+
+    # Log before accept so we know the route was reached even if accept fails
+    log.info(">>> /media-stream WebSocket connection attempt received")
+
+    try:
+        await websocket.accept()
+    except Exception as exc:
+        log.exception(f"WebSocket accept() failed: {exc}")
+        return
+
+    log.info(">>> /media-stream WebSocket accepted successfully")
 
     call_sid: Optional[str] = None
-
-    # -- Deepgram connection --------------------------------------------------
-    # Use asynclive (stable across deepgram-sdk v3.x)
-    dg_connection = dg_client.listen.asynclive.v("1")
-
-    # Flag to prevent double-processing while we're already responding
     is_processing = False
 
-    async def on_transcript(self, result, **kwargs):
-        """Called by Deepgram when a transcript is ready."""
-        nonlocal is_processing
+    # -- Deepgram setup -------------------------------------------------------
+    try:
+        dg_connection = dg_client.listen.asynclive.v("1")
+        log.info("Deepgram asynclive connection object created")
+    except Exception as exc:
+        log.exception(f"Failed to create Deepgram connection object: {exc}")
+        await websocket.close(code=1011)
+        return
 
+    async def on_transcript(self, result, **kwargs):
+        nonlocal is_processing
         try:
             alternatives = result.channel.alternatives
             if not alternatives:
                 return
             transcript = alternatives[0].transcript.strip()
 
-            # Only act on speech_final events with actual content
             if not result.speech_final or not transcript:
                 return
 
-            # Skip if we're already mid-response or call is done
+            log.info(f"[{call_sid}] speech_final transcript: {transcript!r}")
+
             if is_processing:
-                log.debug(f"Skipping transcript (already processing): {transcript!r}")
+                log.info(f"[{call_sid}] Skipping — already processing")
                 return
 
             session = sessions.get(call_sid)
             if not session:
+                log.warning(f"[{call_sid}] No session found for transcript")
                 return
-
             if session.get("is_responding"):
-                log.debug(f"Skipping transcript (is_responding): {transcript!r}")
+                log.info(f"[{call_sid}] Skipping — is_responding")
                 return
-
             if session.get("is_complete"):
                 return
 
             is_processing = True
-            log.info(f"[{call_sid}] Transcript: {transcript!r}")
-
             try:
                 await handle_transcript(call_sid, transcript)
             finally:
                 is_processing = False
 
         except Exception as exc:
-            log.exception(f"Error in on_transcript: {exc}")
+            log.exception(f"on_transcript error: {exc}")
             is_processing = False
 
+    async def on_open(self, open, **kwargs):
+        log.info("Deepgram WebSocket opened")
+
     async def on_error(self, error, **kwargs):
-        log.error(f"Deepgram error: {error}")
+        log.error(f"Deepgram error event: {error}")
 
+    async def on_close(self, close, **kwargs):
+        log.info(f"Deepgram WebSocket closed: {close}")
+
+    dg_connection.on(LiveTranscriptionEvents.Open,       on_open)
     dg_connection.on(LiveTranscriptionEvents.Transcript, on_transcript)
-    dg_connection.on(LiveTranscriptionEvents.Error, on_error)
+    dg_connection.on(LiveTranscriptionEvents.Error,      on_error)
+    dg_connection.on(LiveTranscriptionEvents.Close,      on_close)
 
-    # Deepgram options: mu-law 8 kHz to match Twilio's media stream
     dg_options = LiveOptions(
         encoding="mulaw",
         sample_rate=8000,
         channels=1,
         model="nova-2",
-        endpointing=400,       # ms of silence before declaring end-of-utterance
+        endpointing=400,
         smart_format=True,
     )
 
-    # Start Deepgram — must be inside try/except; a failure here would otherwise
-    # crash the WebSocket handler and cause Twilio to silently hang up the call.
+    log.info("Starting Deepgram live transcription...")
     try:
         started = await asyncio.wait_for(dg_connection.start(dg_options), timeout=10.0)
         if not started:
             raise RuntimeError("dg_connection.start() returned False")
-        log.info("Deepgram connection started successfully")
+        log.info("Deepgram live transcription started successfully")
+    except asyncio.TimeoutError:
+        log.error("Deepgram start() timed out after 10 s")
+        await websocket.close(code=1011)
+        return
     except Exception as exc:
-        log.exception(f"Deepgram failed to start: {exc}")
-        # Speak an error instead of silently hanging up
-        await asyncio.to_thread(
-            lambda: twilio_client.calls(call_sid or "").update(
-                twiml="<Response><Say>Sorry, I'm having a technical issue. Please call back in a moment.</Say><Hangup/></Response>"
-            ) if call_sid else None
-        )
-        await websocket.close()
+        log.exception(f"Deepgram start() failed: {exc}")
+        await websocket.close(code=1011)
         return
 
-    # -- Main WebSocket loop --------------------------------------------------
+    # -- Main Twilio message loop ---------------------------------------------
+    log.info("Entering Twilio media stream message loop")
+    chunks_received = 0
+
     try:
         async for raw_message in websocket.iter_text():
             try:
                 data = json.loads(raw_message)
-            except json.JSONDecodeError:
+            except json.JSONDecodeError as exc:
+                log.warning(f"JSON decode error: {exc} — raw: {raw_message[:120]}")
                 continue
 
             event = data.get("event")
 
             if event == "connected":
-                log.info("Twilio WebSocket: connected")
+                log.info(f"Twilio: connected — protocol={data.get('protocol')} version={data.get('version')}")
 
             elif event == "start":
-                # New stream started (including reconnects after we update the call)
-                call_sid = data["start"].get("callSid")
-                log.info(f"Twilio WebSocket: start — CallSid={call_sid}")
-
-                # Reset responding flag on every reconnect
+                call_sid   = data["start"].get("callSid")
+                stream_sid = data["start"].get("streamSid")
+                log.info(f"Twilio: start — CallSid={call_sid} StreamSid={stream_sid}")
+                log.info(f"Twilio: mediaFormat={data['start'].get('mediaFormat')}")
                 if call_sid and call_sid in sessions:
                     sessions[call_sid]["is_responding"] = False
-
                 is_processing = False
 
             elif event == "media":
-                # Raw audio chunk — forward to Deepgram if not mid-response
+                chunks_received += 1
+                if chunks_received == 1:
+                    log.info(f"[{call_sid}] First audio chunk received — streaming to Deepgram")
+                elif chunks_received % 500 == 0:
+                    log.info(f"[{call_sid}] Audio chunks forwarded: {chunks_received}")
+
                 session = sessions.get(call_sid) if call_sid else None
                 if session and not session.get("is_responding"):
                     audio_bytes = base64.b64decode(data["media"]["payload"])
                     await dg_connection.send(audio_bytes)
 
             elif event == "stop":
-                log.info(f"Twilio WebSocket: stop — CallSid={call_sid}")
+                log.info(f"Twilio: stop — CallSid={call_sid} (total chunks: {chunks_received})")
                 break
 
+            else:
+                log.info(f"Twilio: unknown event {event!r}")
+
     except WebSocketDisconnect:
-        log.info(f"WebSocket disconnected — CallSid={call_sid}")
+        log.info(f"[{call_sid}] WebSocket disconnected (total chunks: {chunks_received})")
     except Exception as exc:
-        log.exception(f"Unexpected error in media_stream: {exc}")
+        log.exception(f"[{call_sid}] Unexpected error in media stream loop: {exc}")
     finally:
+        log.info(f"[{call_sid}] Cleaning up — closing Deepgram connection")
         try:
             await dg_connection.finish()
-        except Exception:
-            pass
-        log.info(f"Deepgram connection closed — CallSid={call_sid}")
+        except Exception as exc:
+            log.warning(f"dg_connection.finish() error (non-fatal): {exc}")
+        log.info(f"[{call_sid}] media_stream handler done")
 
 
 # ---------------------------------------------------------------------------
@@ -331,103 +386,69 @@ async def media_stream(websocket: WebSocket):
 # ---------------------------------------------------------------------------
 
 async def handle_transcript(call_sid: str, transcript: str):
-    """
-    Given a user utterance, ask Claude what to say next, then speak it via
-    Twilio by updating the live call.
-    """
     session = sessions.get(call_sid)
     if not session:
-        log.warning(f"No session for CallSid={call_sid}")
+        log.warning(f"[{call_sid}] handle_transcript: no session")
         return
 
-    # Add user message to history
+    host = session.get("host", HOST)
     session["messages"].append({"role": "user", "content": transcript})
 
-    # -- Call Claude ----------------------------------------------------------
+    log.info(f"[{call_sid}] Calling Claude — {len(session['messages'])} messages in history")
     try:
         response = await anthropic_client.messages.create(
-            model="claude-opus-4-5",   # as specified in the requirements
+            model="claude-opus-4-5",
             max_tokens=512,
             system=SYSTEM_PROMPT,
             messages=session["messages"],
         )
     except Exception as exc:
-        log.exception(f"Claude API error: {exc}")
-        # Speak a generic error so the caller isn't left in silence
-        await speak_and_update(call_sid, "I'm sorry, I had a technical issue. Could you please repeat that?", reconnect=True)
+        log.exception(f"[{call_sid}] Claude API error: {exc}")
+        await speak_and_update(call_sid, "I'm sorry, I had a technical issue. Could you please repeat that?", reconnect=True, host=host)
         return
 
-    assistant_text = ""
-    for block in response.content:
-        if block.type == "text":
-            assistant_text += block.text
-
-    assistant_text = assistant_text.strip()
+    assistant_text = "".join(b.text for b in response.content if b.type == "text").strip()
     log.info(f"[{call_sid}] Claude response: {assistant_text!r}")
 
-    # -- Check for COMPLETE signal --------------------------------------------
-    complete_match = re.search(
-        r"COMPLETE:(\{.*?\})",
-        assistant_text,
-        re.DOTALL,
-    )
+    complete_match = re.search(r"COMPLETE:(\{.*?\})", assistant_text, re.DOTALL)
 
     if complete_match:
-        # Extract the JSON payload and everything after it (the closing message)
-        json_str = complete_match.group(1)
+        json_str        = complete_match.group(1)
         closing_message = assistant_text[complete_match.end():].strip()
-
         if not closing_message:
             closing_message = "Thank you! We'll have a plumber contact you shortly. Have a great day!"
 
         try:
             collected = json.loads(json_str)
         except json.JSONDecodeError:
-            log.error(f"Failed to parse COMPLETE JSON: {json_str!r}")
+            log.error(f"[{call_sid}] Failed to parse COMPLETE JSON: {json_str!r}")
             collected = {}
 
-        session["is_complete"] = True
+        session["is_complete"]    = True
         session["collected_info"] = collected
-
         log.info(f"[{call_sid}] Collected info: {collected}")
 
-        # Send SMS to plumber
         await send_sms_to_plumber(call_sid, collected, session["from_number"])
-
-        # Add Claude's closing to history (just the closing text, not the COMPLETE line)
         session["messages"].append({"role": "assistant", "content": closing_message})
-
-        # Speak closing message and hang up
-        await speak_and_update(call_sid, closing_message, reconnect=False)
-
+        await speak_and_update(call_sid, closing_message, reconnect=False, host=host)
     else:
-        # Normal conversational turn — add to history and speak
         session["messages"].append({"role": "assistant", "content": assistant_text})
-        await speak_and_update(call_sid, assistant_text, reconnect=True)
+        await speak_and_update(call_sid, assistant_text, reconnect=True, host=host)
 
 
-async def speak_and_update(call_sid: str, text: str, reconnect: bool):
-    """
-    Update the live Twilio call with new TwiML to speak `text`.
-
-    Twilio will close the current WebSocket, speak the text using Polly,
-    then (if reconnect=True) reconnect a new WebSocket to /media-stream.
-
-    We set is_responding=True first so that any trailing audio from Deepgram
-    doesn't trigger a second response while Twilio is speaking.
-    """
+async def speak_and_update(call_sid: str, text: str, reconnect: bool, host: str):
+    """Update the live Twilio call to speak `text`, then reconnect or hang up."""
     session = sessions.get(call_sid)
     if session:
         session["is_responding"] = True
 
-    twiml = build_twiml(text, reconnect=reconnect)
+    twiml = build_twiml(text, reconnect=reconnect, host=host)
+    log.info(f"[{call_sid}] Updating call — reconnect={reconnect} host={host!r}")
+    log.info(f"[{call_sid}] TwiML: {twiml}")
 
     try:
-        # Twilio REST calls are synchronous — run in a thread to avoid blocking
-        await asyncio.to_thread(
-            lambda: twilio_client.calls(call_sid).update(twiml=twiml)
-        )
-        log.info(f"[{call_sid}] Call updated — reconnect={reconnect}")
+        await asyncio.to_thread(lambda: twilio_client.calls(call_sid).update(twiml=twiml))
+        log.info(f"[{call_sid}] Call update successful")
     except Exception as exc:
         log.exception(f"[{call_sid}] Failed to update call: {exc}")
         if session:
@@ -439,23 +460,16 @@ async def speak_and_update(call_sid: str, text: str, reconnect: bool):
 # ---------------------------------------------------------------------------
 
 async def send_sms_to_plumber(call_sid: str, info: dict, from_number: str):
-    """Send a formatted SMS with all collected information to the plumber."""
-    name = info.get("name", "N/A")
-    address = info.get("address", "N/A")
-    problem_type = info.get("problem_type", "N/A")
-    urgency = info.get("urgency", "N/A")
-    callback_number = info.get("callback_number", "N/A")
-
     body = (
         f"🔧 NEW PLUMBING REQUEST\n\n"
-        f"Name: {name}\n"
-        f"Address: {address}\n"
-        f"Problem: {problem_type}\n"
-        f"Urgency: {urgency}\n"
-        f"Callback: {callback_number}\n"
+        f"Name: {info.get('name', 'N/A')}\n"
+        f"Address: {info.get('address', 'N/A')}\n"
+        f"Problem: {info.get('problem_type', 'N/A')}\n"
+        f"Urgency: {info.get('urgency', 'N/A')}\n"
+        f"Callback: {info.get('callback_number', 'N/A')}\n"
         f"Caller ID: {from_number}"
     )
-
+    log.info(f"[{call_sid}] Sending SMS to plumber:\n{body}")
     try:
         await asyncio.to_thread(
             lambda: twilio_client.messages.create(
@@ -464,6 +478,6 @@ async def send_sms_to_plumber(call_sid: str, info: dict, from_number: str):
                 to=PLUMBER_PHONE_NUMBER,
             )
         )
-        log.info(f"[{call_sid}] SMS sent to plumber at {PLUMBER_PHONE_NUMBER}")
+        log.info(f"[{call_sid}] SMS sent to {PLUMBER_PHONE_NUMBER}")
     except Exception as exc:
-        log.exception(f"[{call_sid}] Failed to send SMS: {exc}")
+        log.exception(f"[{call_sid}] SMS failed: {exc}")
