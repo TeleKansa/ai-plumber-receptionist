@@ -48,7 +48,7 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
 DEEPGRAM_API_KEY    = os.getenv("DEEPGRAM_API_KEY", "")
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
 PLUMBER_PHONE_NUMBER = os.getenv("PLUMBER_PHONE_NUMBER", "")
-HOST = "web-production-4b07e.up.railway.app"  # Railway deployment URL
+HOST = "ai-plumber-receptionist-production.up.railway.app"  # Railway deployment URL
 
 # Clients
 twilio_client    = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
