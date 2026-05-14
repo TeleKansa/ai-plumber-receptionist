@@ -82,30 +82,40 @@ sessions: dict[str, dict] = {}
 # ---------------------------------------------------------------------------
 
 SYSTEM_PROMPT = """You are a friendly AI receptionist for a plumbing company.
-Your job is to collect exactly 5 pieces of information from the caller, one at a time.
+Your job is to collect 5 pieces of information from the caller, one at a time.
 Keep responses SHORT — this is a phone call. Speak naturally, no bullet points or markdown.
 
-The 5 pieces you must collect (in any convenient order):
+The 5 pieces you must collect:
 1. Customer's full name
 2. Service address (full address where the plumber should go)
 3. Problem type (what plumbing issue they're having)
-4. Urgency — determined by asking 3 sub-questions:
+4. Urgency — ask all 3 of these sub-questions:
    a. Can they still use the affected fixture/plumbing?
    b. When did the problem start?
    c. Is there any active water damage or flooding?
-5. Callback phone number (in case we get disconnected)
+5. Callback phone number
 
 Guidelines:
 - Ask one question at a time.
 - Be warm and reassuring — plumbing problems are stressful.
 - If they give you multiple pieces at once, acknowledge all of them and ask only for what's still missing.
-
-MANDATORY COMPLETION RULE:
-When you have collected ALL 5 pieces of information (full name, full address, problem description, urgency details, and callback number), you MUST end your final message with COMPLETE: followed immediately by a JSON object on the same line, like this:
-COMPLETE: {"name": "John Smith", "address": "123 Main St, Kansas City, MO 64101", "problem": "leaking pipe under sink", "urgency": "not flooding, started yesterday, no active water damage", "callback": "+18165551234"}
-
-Do not say goodbye or anything after the COMPLETE line. This is mandatory - never end the call without outputting COMPLETE.
+- Once you have everything, give a brief warm closing like "Thank you, a plumber will call you back shortly!"
 """
+
+CHECKER_PROMPT = """You are reviewing a phone call transcript between an AI receptionist and a plumbing customer.
+
+Determine whether ALL of the following have been clearly provided:
+- Full name
+- Full service address
+- Problem description
+- Urgency info (ability to use fixture, when it started, whether there is active water damage)
+- Callback phone number
+
+Respond with ONLY a raw JSON object — no markdown, no code fences, no explanation:
+{"complete": true, "name": "...", "address": "...", "problem": "...", "urgency": "...", "callback": "..."}
+
+If anything is missing, set complete to false and leave missing fields as empty strings.
+Do not include anything outside the JSON object."""
 
 # ---------------------------------------------------------------------------
 # TwiML helpers
@@ -365,55 +375,67 @@ async def handle_transcript(call_sid: str, transcript: str):
     host = session.get("host", HOST)
     session["messages"].append({"role": "user", "content": transcript})
 
-    log.info(f"[{call_sid}] Calling Claude — {len(session['messages'])} messages in history")
+    # -- Call 1: conversational response --------------------------------------
+    log.info(f"[{call_sid}] Calling Claude (conversation) — {len(session['messages'])} messages")
     try:
-        response = await anthropic_client.messages.create(
+        conv_response = await anthropic_client.messages.create(
             model="claude-opus-4-5",
-            max_tokens=1024,
+            max_tokens=256,
             system=SYSTEM_PROMPT,
             messages=session["messages"],
         )
     except Exception as exc:
-        log.exception(f"[{call_sid}] Claude API error: {exc}")
+        log.exception(f"[{call_sid}] Claude conversation error: {exc}")
         await speak_and_update(call_sid, "I'm sorry, I had a technical issue. Could you please repeat that?", reconnect=True, host=host)
         return
 
-    assistant_text = "".join(b.text for b in response.content if b.type == "text").strip()
-    log.info(f"[{call_sid}] Claude raw response ({len(assistant_text)} chars): {assistant_text!r}")
+    assistant_text = "".join(b.text for b in conv_response.content if b.type == "text").strip()
+    log.info(f"[{call_sid}] Claude conversation response: {assistant_text!r}")
+    session["messages"].append({"role": "assistant", "content": assistant_text})
 
-    # Allow optional whitespace after colon; use greedy .* so the full JSON is captured
-    # even if it contains newlines or nested structures.
-    complete_match = re.search(r"COMPLETE:\s*(\{.*\})", assistant_text, re.DOTALL)
+    # -- Call 2: completion check ---------------------------------------------
+    # Build a plain-text summary of the conversation for the checker
+    convo_text = "\n".join(
+        f"{'Customer' if m['role'] == 'user' else 'Receptionist'}: {m['content']}"
+        for m in session["messages"]
+    )
+    log.info(f"[{call_sid}] Calling Claude (checker) to assess completion")
+    try:
+        check_response = await anthropic_client.messages.create(
+            model="claude-opus-4-5",
+            max_tokens=256,
+            system=CHECKER_PROMPT,
+            messages=[{"role": "user", "content": convo_text}],
+        )
+    except Exception as exc:
+        log.exception(f"[{call_sid}] Claude checker error: {exc}")
+        # Checker failed — just continue the conversation normally
+        await speak_and_update(call_sid, assistant_text, reconnect=True, host=host)
+        return
 
-    log.info(f"[{call_sid}] COMPLETE signal detected: {bool(complete_match)}")
+    checker_raw = "".join(b.text for b in check_response.content if b.type == "text").strip()
+    log.info(f"[{call_sid}] Checker raw response: {checker_raw!r}")
 
-    if complete_match:
-        json_str        = complete_match.group(1).strip()
-        closing_message = assistant_text[complete_match.end():].strip()
-        log.info(f"[{call_sid}] Raw JSON string from Claude: {json_str!r}")
-        log.info(f"[{call_sid}] Closing message: {closing_message!r}")
+    # Strip markdown code fences if Claude wraps the JSON anyway
+    checker_raw = re.sub(r"^```[a-z]*\n?|\n?```$", "", checker_raw.strip())
 
-        if not closing_message:
-            closing_message = "Thank you! We'll have a plumber contact you shortly. Have a great day!"
+    try:
+        checker_result = json.loads(checker_raw)
+    except json.JSONDecodeError as exc:
+        log.error(f"[{call_sid}] Checker JSON parse failed: {exc} — raw: {checker_raw!r}")
+        checker_result = {"complete": False}
 
-        try:
-            collected = json.loads(json_str)
-            log.info(f"[{call_sid}] Parsed collected info: {collected}")
-        except json.JSONDecodeError as exc:
-            log.error(f"[{call_sid}] JSON parse failed: {exc} — raw: {json_str!r}")
-            collected = {}
+    is_complete = checker_result.get("complete", False)
+    log.info(f"[{call_sid}] Completion check: complete={is_complete} data={checker_result}")
 
+    if is_complete:
         session["is_complete"]    = True
-        session["collected_info"] = collected
-
-        log.info(f"[{call_sid}] Triggering SMS to PLUMBER_PHONE_NUMBER={PLUMBER_PHONE_NUMBER!r}")
-        await send_sms_to_plumber(call_sid, collected, session["from_number"])
-
-        session["messages"].append({"role": "assistant", "content": closing_message})
-        await speak_and_update(call_sid, closing_message, reconnect=False, host=host)
+        session["collected_info"] = checker_result
+        log.info(f"[{call_sid}] All info collected — sending SMS to {PLUMBER_PHONE_NUMBER!r}")
+        await send_sms_to_plumber(call_sid, checker_result, session["from_number"])
+        # Speak the conversational closing then hang up
+        await speak_and_update(call_sid, assistant_text, reconnect=False, host=host)
     else:
-        log.info(f"[{call_sid}] No COMPLETE signal — continuing conversation")
-        session["messages"].append({"role": "assistant", "content": assistant_text})
         await speak_and_update(call_sid, assistant_text, reconnect=True, host=host)
 
 
