@@ -97,18 +97,14 @@ The 5 pieces you must collect (in any convenient order):
 
 Guidelines:
 - Ask one question at a time.
-- Confirm each piece of information back to the caller before moving on.
 - Be warm and reassuring — plumbing problems are stressful.
 - If they give you multiple pieces at once, acknowledge all of them and ask only for what's still missing.
-- Once you have collected all 5 pieces, output EXACTLY this format on its own line (no extra text before the JSON):
-  COMPLETE:{"name":"...","address":"...","problem_type":"...","urgency":"...","callback_number":"..."}
-  Then on the NEXT line, say a brief closing message to the caller like:
-  "Thank you! We'll have a plumber contact you shortly. Have a good day!"
 
-The urgency field should summarize the 3 sub-answers into a concise description,
-e.g. "Cannot use toilet. Started this morning. No active flooding."
+MANDATORY COMPLETION RULE:
+When you have collected ALL 5 pieces of information (full name, full address, problem description, urgency details, and callback number), you MUST end your final message with COMPLETE: followed immediately by a JSON object on the same line, like this:
+COMPLETE: {"name": "John Smith", "address": "123 Main St, Kansas City, MO 64101", "problem": "leaking pipe under sink", "urgency": "not flooding, started yesterday, no active water damage", "callback": "+18165551234"}
 
-Important: Do NOT output the COMPLETE line until you truly have all 5 pieces confirmed.
+Do not say goodbye or anything after the COMPLETE line. This is mandatory - never end the call without outputting COMPLETE.
 """
 
 # ---------------------------------------------------------------------------
@@ -449,9 +445,9 @@ async def send_sms_to_plumber(call_sid: str, info: dict, from_number: str):
         f"🔧 NEW PLUMBING REQUEST\n\n"
         f"Name: {info.get('name', 'N/A')}\n"
         f"Address: {info.get('address', 'N/A')}\n"
-        f"Problem: {info.get('problem_type', 'N/A')}\n"
+        f"Problem: {info.get('problem', info.get('problem_type', 'N/A'))}\n"
         f"Urgency: {info.get('urgency', 'N/A')}\n"
-        f"Callback: {info.get('callback_number', 'N/A')}\n"
+        f"Callback: {info.get('callback', info.get('callback_number', 'N/A'))}\n"
         f"Caller ID: {from_number}"
     )
     log.info(f"[{call_sid}] Sending SMS to plumber:\n{body}")
