@@ -48,8 +48,7 @@ TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
 DEEPGRAM_API_KEY    = os.getenv("DEEPGRAM_API_KEY", "")
 ANTHROPIC_API_KEY   = os.getenv("ANTHROPIC_API_KEY", "")
 PLUMBER_PHONE_NUMBER = os.getenv("PLUMBER_PHONE_NUMBER", "")
-# HOST is optional — if unset we derive it from the incoming request at runtime
-HOST = os.getenv("HOST", "")
+HOST = "web-production-4b07e.up.railway.app"
 
 # Clients
 twilio_client    = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
@@ -135,20 +134,6 @@ def build_twiml(text: str, reconnect: bool, host: str) -> str:
     )
 
 
-def resolve_host(request: Request) -> str:
-    """
-    Determine the public hostname to use in WebSocket URLs.
-    Preference order:
-      1. HOST env var (explicitly configured)
-      2. X-Forwarded-Host header (set by Railway's reverse proxy)
-      3. Host header from the request
-    """
-    if HOST:
-        return HOST
-    forwarded = request.headers.get("x-forwarded-host", "")
-    if forwarded:
-        return forwarded.split(",")[0].strip()
-    return request.headers.get("host", "")
 
 
 # ---------------------------------------------------------------------------
@@ -164,7 +149,7 @@ async def on_startup():
     log.info(f"  DEEPGRAM_API_KEY     : {'SET' if DEEPGRAM_API_KEY     else 'MISSING'}")
     log.info(f"  ANTHROPIC_API_KEY    : {'SET' if ANTHROPIC_API_KEY    else 'MISSING'}")
     log.info(f"  PLUMBER_PHONE_NUMBER : {PLUMBER_PHONE_NUMBER or 'MISSING'}")
-    log.info(f"  HOST env var         : {HOST or '(not set — will derive from request)'}")
+    log.info(f"  HOST                 : {HOST}")
     log.info("===========================================")
 
 
@@ -193,13 +178,8 @@ async def voice_webhook(request: Request):
     call_sid    = form_data.get("CallSid", "unknown")
     from_number = form_data.get("From",    "unknown")
 
-    effective_host = resolve_host(request)
-
     log.info(f"[{call_sid}] Incoming call from {from_number}")
-    log.info(f"[{call_sid}] Effective host: {effective_host!r}  (HOST env={HOST!r})")
-
-    if not effective_host:
-        log.error(f"[{call_sid}] Cannot determine host — set the HOST environment variable in Railway!")
+    log.info(f"[{call_sid}] Using host: {HOST!r}")
 
     sessions[call_sid] = {
         "messages":      [],
@@ -207,7 +187,7 @@ async def voice_webhook(request: Request):
         "collected_info": {},
         "from_number":   from_number,
         "is_responding": False,
-        "host":          effective_host,
+        "host":          HOST,
     }
 
     greeting = (
