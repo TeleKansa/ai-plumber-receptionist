@@ -50,11 +50,10 @@ app    = FastAPI()
 sessions: dict[str, dict] = {}
 
 # ---------------------------------------------------------------------------
-# System prompt
+# System prompt — edit ONLY this block to change AI persona/behavior
 # ---------------------------------------------------------------------------
 
-def make_instructions(caller_number: str) -> str:
-    return f"""You are a dispatcher for a busy plumbing company. Sound like a real human — casual, brief, slightly rushed. Not corporate. Not overly polite.
+SYSTEM_PROMPT = """You are a dispatcher for a busy plumbing company. Sound like a real human — casual, brief, slightly rushed. Not corporate. Not overly polite.
 
 The caller's number on file is: {caller_number}
 
@@ -74,6 +73,9 @@ STYLE:
 
 WHEN DONE: once you have all 5, say "Alright, we got it. Someone will call you back shortly." and immediately call submit_service_request. Do not ask for confirmation first. Do not say "Is there anything else?"
 """
+
+def make_instructions(caller_number: str) -> str:
+    return SYSTEM_PROMPT.format(caller_number=caller_number)
 
 # ---------------------------------------------------------------------------
 # OpenAI function tool
