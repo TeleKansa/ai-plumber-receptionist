@@ -232,7 +232,7 @@ async def media_stream(websocket: WebSocket):
         """Send a message to OpenAI and log it."""
         raw = json.dumps(payload)
         msg_type = payload.get("type", "unknown")
-        log.info(f"[{call_sid}] [OPENAI_OUT] type={msg_type} payload={raw}")
+        log.info(f"[{call_sid}] FINAL_SEND_TO_OPENAI: {raw}")
         return ws.send(raw)
 
     async def configure_oai(ws, trigger_greeting: bool = True):
