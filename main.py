@@ -228,17 +228,7 @@ async def media_stream(websocket: WebSocket):
         session_payload = {
             "type": "session.update",
             "session": {
-                "type":                      "realtime",
-                "instructions":              make_instructions(from_number),
-                "input_audio_format":        "g711_ulaw",
-                "output_audio_format":       "g711_ulaw",
-                "turn_detection": {
-                    "type":               "server_vad",
-                    "threshold":          0.5,
-                    "prefix_padding_ms":  300,
-                    "silence_duration_ms": 600,
-                },
-                "tools":       TOOLS,
+                "type": "realtime",
             },
         }
         log.info(f"[{call_sid}] >>> session.update payload: {json.dumps(session_payload)}")
