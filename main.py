@@ -1,20 +1,14 @@
 """
-AI Plumber Receptionist — OpenAI Realtime API
-==============================================
-Twilio voice → /media-stream WebSocket → OpenAI Realtime API (bidirectional audio bridge)
+AI Plumber Receptionist — Minimal Audio Bridge
+===============================================
+Phase 1: bare Twilio <-> OpenAI Realtime audio bridge.
+No tools, no SMS, no state. Goal: AI speaks and hears caller.
 
-Audio path:
-  Twilio  →  mu-law 8 kHz  →  PCM16 24 kHz  →  OpenAI Realtime
-  OpenAI  →  PCM16 24 kHz  →  mu-law 8 kHz  →  Twilio
-
-Completion:
-  OpenAI calls submit_service_request() when all 5 fields collected
-  Backend sends SMS, AI gives closing line, call ends naturally
+Session pattern mirrors the official OpenAI Twilio demo:
+  github.com/openai/openai-realtime-twilio-demo
 """
 
 import asyncio
-import audioop
-import base64
 import json
 import logging
 import os
@@ -25,7 +19,6 @@ import websockets.exceptions
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, PlainTextResponse
-from twilio.rest import Client as TwilioClient
 
 load_dotenv()
 
@@ -39,82 +32,16 @@ log = logging.getLogger("plumber")
 # Config
 # ---------------------------------------------------------------------------
 
-TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID",   "")
-TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN",    "")
-TWILIO_PHONE_NUMBER  = os.getenv("TWILIO_PHONE_NUMBER",  "")
-PLUMBER_PHONE_NUMBER = os.getenv("PLUMBER_PHONE_NUMBER", "")
-OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY",       "")
-HOST                 = "ai-plumber-receptionist-production.up.railway.app"
+OPENAI_API_KEY  = os.getenv("OPENAI_API_KEY", "")
+TWILIO_ACCOUNT_SID  = os.getenv("TWILIO_ACCOUNT_SID",  "")
+TWILIO_AUTH_TOKEN   = os.getenv("TWILIO_AUTH_TOKEN",   "")
+TWILIO_PHONE_NUMBER = os.getenv("TWILIO_PHONE_NUMBER", "")
+HOST = "ai-plumber-receptionist-production.up.railway.app"
 
+# Exact model version from the official OpenAI Twilio demo
 OAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
 
-twilio = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
-app    = FastAPI()
-
-# call_sid → {from_number, complete}
-sessions: dict[str, dict] = {}
-
-# ---------------------------------------------------------------------------
-# System prompt
-# ---------------------------------------------------------------------------
-
-def make_instructions(caller_number: str) -> str:
-    return f"""You are a dispatcher for a busy plumbing company. Sound like a real human — casual, brief, slightly rushed. Not corporate. Not overly polite.
-
-The caller's number on file is: {caller_number}
-
-Collect these 5 things in this order:
-1. What's the plumbing issue?
-2. Is it urgent — active leak or flooding right now?
-3. Service address (confirm it carefully)
-4. Callback number — ask "Is {caller_number} good to reach you?" — only ask for a different number if they say no
-5. Customer name — ask last
-
-EMERGENCY RULE: if caller mentions flooding or active water, ask for address and callback FIRST.
-
-STYLE:
-- 1-2 short sentences per turn. One question at a time.
-- No small talk. No corporate phrases. Stay focused.
-- Sound like you're juggling multiple calls.
-
-WHEN DONE: once you have all 5, say "Alright, we got it. Someone will call you back shortly." and immediately call submit_service_request. Do not ask for confirmation first. Do not say "Is there anything else?"
-"""
-
-# ---------------------------------------------------------------------------
-# OpenAI function tool
-# ---------------------------------------------------------------------------
-
-TOOLS = [
-    {
-        "type": "function",
-        "name": "submit_service_request",
-        "description": "Submit the service request once all 5 fields are collected: issue, urgency, address, callback number, and customer name.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "issue":    {"type": "string", "description": "Plumbing problem description"},
-                "urgency":  {"type": "string", "description": "Urgency — active leak/flooding or not"},
-                "address":  {"type": "string", "description": "Full service address"},
-                "callback": {"type": "string", "description": "Callback phone number"},
-                "name":     {"type": "string", "description": "Customer name"},
-            },
-            "required": ["issue", "urgency", "address", "callback", "name"],
-        },
-    }
-]
-
-# ---------------------------------------------------------------------------
-# Audio transcoding
-# ---------------------------------------------------------------------------
-
-def mulaw8k_to_pcm16_24k(data: bytes) -> bytes:
-    pcm8k         = audioop.ulaw2lin(data, 2)
-    pcm24k, _     = audioop.ratecv(pcm8k, 2, 1, 8000, 24000, None)
-    return pcm24k
-
-def pcm16_24k_to_mulaw8k(data: bytes) -> bytes:
-    pcm8k, _  = audioop.ratecv(data, 2, 1, 24000, 8000, None)
-    return audioop.lin2ulaw(pcm8k, 2)
+app = FastAPI()
 
 # ---------------------------------------------------------------------------
 # Startup / health
@@ -122,13 +49,11 @@ def pcm16_24k_to_mulaw8k(data: bytes) -> bytes:
 
 @app.on_event("startup")
 async def on_startup():
-    log.info("=== Plumber Receptionist (OpenAI Realtime) starting ===")
-    log.info(f"  TWILIO_ACCOUNT_SID   : {'SET' if TWILIO_ACCOUNT_SID   else 'MISSING'}")
-    log.info(f"  TWILIO_AUTH_TOKEN    : {'SET' if TWILIO_AUTH_TOKEN     else 'MISSING'}")
-    log.info(f"  TWILIO_PHONE_NUMBER  : {TWILIO_PHONE_NUMBER  or 'MISSING'}")
-    log.info(f"  OPENAI_API_KEY       : {'SET' if OPENAI_API_KEY        else 'MISSING'}")
-    log.info(f"  PLUMBER_PHONE_NUMBER : {PLUMBER_PHONE_NUMBER or 'MISSING'}")
-    log.info(f"  HOST                 : {HOST}")
+    log.info("=== Plumber Receptionist (minimal bridge) starting ===")
+    log.info(f"  OPENAI_API_KEY  : {'SET' if OPENAI_API_KEY  else 'MISSING'}")
+    log.info(f"  TWILIO_ACCOUNT_SID : {'SET' if TWILIO_ACCOUNT_SID else 'MISSING'}")
+    log.info(f"  HOST            : {HOST}")
+    log.info(f"  OAI_URL         : {OAI_URL}")
     log.info("======================================================")
 
 @app.get("/health")
@@ -145,13 +70,10 @@ async def media_stream_probe():
 
 @app.post("/voice")
 async def voice(request: Request):
-    form        = await request.form()
-    call_sid    = form.get("CallSid",  "unknown")
-    from_number = form.get("From",     "unknown")
-
-    log.info(f"[{call_sid}] Incoming call from {from_number}")
-
-    sessions[call_sid] = {"from_number": from_number, "complete": False}
+    form     = await request.form()
+    call_sid = form.get("CallSid", "unknown")
+    from_num = form.get("From",    "unknown")
+    log.info(f"[{call_sid}] Incoming call from {from_num}")
 
     twiml = (
         "<Response>"
@@ -163,271 +85,112 @@ async def voice(request: Request):
     return Response(content=twiml, media_type="application/xml")
 
 # ---------------------------------------------------------------------------
-# Media stream WebSocket
+# Media-stream WebSocket — minimal audio bridge
 # ---------------------------------------------------------------------------
 
 @app.websocket("/media-stream")
-async def media_stream(websocket: WebSocket):
-    log.info(">>> /media-stream connection attempt")
-    try:
-        await websocket.accept()
-    except Exception as exc:
-        log.exception(f"accept() failed: {exc}")
-        return
+async def media_stream(ws: WebSocket):
+    await ws.accept()
     log.info(">>> /media-stream accepted")
 
-    call_sid                : Optional[str] = None
-    stream_sid              : Optional[str] = None
-    from_number             : str           = "unknown"
-    oai_ws                  : Optional[websockets.WebSocketClientProtocol] = None
-    latest_media_timestamp  : int           = 0   # ms timestamp of last Twilio media frame
-    response_start_timestamp: Optional[int] = None  # ms timestamp when AI audio began
-    last_assistant_item     : Optional[str] = None  # item_id of in-progress AI audio item
-    greeted                 : bool          = False  # True after first greeting is sent
+    call_sid  : Optional[str] = None
+    stream_sid: Optional[str] = None
+    oai_ws    : Optional[websockets.WebSocketClientProtocol] = None
 
-    # -- helpers --------------------------------------------------------------
-
-    async def send_audio_to_twilio(audio_b64: str):
-        if not stream_sid:
-            return
-        log.debug(f"[{call_sid}] [TWILIO] OUT event=media (audio payload omitted)")
-        await websocket.send_text(json.dumps({
-            "event":    "media",
-            "streamSid": stream_sid,
-            "media":    {"payload": audio_b64},
-        }))
-        log.debug(f"[{call_sid}] [TWILIO] OUT event=mark")
-        await websocket.send_text(json.dumps({
-            "event":    "mark",
-            "streamSid": stream_sid,
-        }))
-
-    async def clear_twilio_audio():
-        if stream_sid:
-            log.info(f"[{call_sid}] [TWILIO] OUT event=clear")
-            await websocket.send_text(json.dumps({
-                "event":     "clear",
-                "streamSid": stream_sid,
-            }))
-
-    async def connect_oai() -> Optional[websockets.WebSocketClientProtocol]:
-        OPENAI_WS_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
-        for attempt in range(1, 4):
-            try:
-                log.info(f"DEBUG: Connecting to OpenAI with URL: {OPENAI_WS_URL}")
-                ws = await websockets.connect(
-                    OPENAI_WS_URL,
-                    extra_headers={
-                        "Authorization": f"Bearer {OPENAI_API_KEY}",
-                    },
-                )
-                log.info(f"[{call_sid}] Connected to OpenAI Realtime (attempt {attempt})")
-                return ws
-            except Exception as exc:
-                log.error(f"[{call_sid}] OpenAI connect attempt {attempt} failed: {exc}")
-                if attempt < 3:
-                    await asyncio.sleep(2 ** (attempt - 1))
-        log.error(f"[{call_sid}] All OpenAI connect attempts failed")
-        return None
-
-    def oai_send(ws, payload: dict):
-        """Send a message to OpenAI and log it."""
-        raw = json.dumps(payload)
-        msg_type = payload.get("type", "unknown")
-        log.info(f"[{call_sid}] FINAL_SEND_TO_OPENAI: {raw}")
-        return ws.send(raw)
-
-    async def configure_oai(ws):
-        session_update_event = {
-            "event_id": "init_session",
-            "type": "session.update",
-            "session": {
-                "modalities":          ["text", "audio"],
-                "instructions":        make_instructions(from_number),
-                "voice":               "alloy",
-                "input_audio_format":  "g711_ulaw",
-                "output_audio_format": "g711_ulaw",
-                "turn_detection":      {"type": "server_vad"},
-            },
-        }
-        raw = json.dumps(session_update_event)
-        log.info(f"[{call_sid}] STRIPPING ALL ABSTRACTIONS. SENDING RAW EVENT. payload={raw}")
-        await ws.send(raw)
-
-    # -- OpenAI event handler (runs as background task) -----------------------
+    # -- OpenAI reader (background task) -------------------------------------
 
     async def oai_reader():
-        nonlocal oai_ws, latest_media_timestamp, response_start_timestamp, last_assistant_item, greeted
-        fn_args = ""
-        fn_call_id = None
-        fn_name    = None
+        nonlocal oai_ws
+        async for raw in oai_ws:
+            evt   = json.loads(raw)
+            etype = evt.get("type", "")
 
-        while True:
-            if oai_ws is None:
-                break
-            try:
-                async for raw in oai_ws:
-                    evt   = json.loads(raw)
-                    etype = evt.get("type", "")
+            # Log every event type received from OpenAI
+            if etype != "response.audio.delta":
+                log.info(f"[{call_sid}] [OAI_IN] {etype}")
 
-                    if etype == "session.created":
-                        log.info(f"[{call_sid}] OpenAI session created — sending session.update now")
-                        await configure_oai(oai_ws)
+            if etype == "response.audio.delta":
+                delta = evt.get("delta", "")
+                if delta and stream_sid:
+                    await ws.send_text(json.dumps({
+                        "event":    "media",
+                        "streamSid": stream_sid,
+                        "media":    {"payload": delta},
+                    }))
 
-                    elif etype == "session.updated":
-                        log.info(f"[{call_sid}] OpenAI session updated — sending response.create now")
-                        if not greeted:
-                            greeted = True
-                            greeting_raw = json.dumps({
-                                "type": "response.create",
-                                "response": {"instructions": "Greet briefly and ask what the plumbing issue is."},
-                            })
-                            log.info(f"[{call_sid}] FINAL_SEND_TO_OPENAI: {greeting_raw}")
-                            await oai_ws.send(greeting_raw)
+            elif etype == "error":
+                log.error(f"[{call_sid}] [OAI_IN] error: {evt.get('error')}")
 
-                    elif etype == "input_audio_buffer.speech_started":
-                        log.info(f"[{call_sid}] Barge-in detected")
-                        if last_assistant_item and response_start_timestamp is not None:
-                            elapsed_ms = max(0, latest_media_timestamp - response_start_timestamp)
-                            truncate_payload = {
-                                "type":          "conversation.item.truncate",
-                                "item_id":       last_assistant_item,
-                                "content_index": 0,
-                                "audio_end_ms":  elapsed_ms,
-                            }
-                            try:
-                                await oai_send(oai_ws, truncate_payload)
-                            except Exception:
-                                pass
-                        await clear_twilio_audio()
-                        last_assistant_item      = None
-                        response_start_timestamp = None
-
-                    elif etype == "response.audio.delta":
-                        delta = evt.get("delta", "")
-                        if delta:
-                            if response_start_timestamp is None:
-                                response_start_timestamp = latest_media_timestamp
-                            if evt.get("item_id"):
-                                last_assistant_item = evt["item_id"]
-                            try:
-                                await send_audio_to_twilio(delta)
-                            except Exception as exc:
-                                log.warning(f"[{call_sid}] Audio send error: {exc}")
-
-                    elif etype == "response.audio.done":
-                        last_assistant_item      = None
-                        response_start_timestamp = None
-
-                    elif etype == "response.function_call_arguments.delta":
-                        fn_args += evt.get("delta", "")
-
-                    elif etype == "response.function_call_arguments.done":
-                        fn_call_id = evt.get("call_id", "")
-                        fn_name    = evt.get("name",    "")
-                        log.info(f"[{call_sid}] Function call complete: {fn_name}")
-
-                        if fn_name == "submit_service_request":
-                            try:
-                                args = json.loads(fn_args)
-                            except json.JSONDecodeError:
-                                log.error(f"[{call_sid}] Bad function args JSON: {fn_args!r}")
-                                args = {}
-
-                            session = sessions.get(call_sid, {})
-                            session["complete"] = True
-                            log.info(f"[{call_sid}] Collected: {args}")
-
-                            await send_sms(call_sid, args, session.get("from_number", "unknown"))
-
-                            try:
-                                await oai_send(oai_ws, {
-                                    "type": "conversation.item.create",
-                                    "item": {
-                                        "type":    "function_call_output",
-                                        "call_id": fn_call_id,
-                                        "output":  json.dumps({"success": True}),
-                                    },
-                                })
-                                await oai_send(oai_ws, {"type": "response.create"})
-                            except Exception as exc:
-                                log.warning(f"[{call_sid}] Could not send function result: {exc}")
-
-                        fn_args    = ""
-                        fn_call_id = None
-                        fn_name    = None
-
-                    elif etype == "error":
-                        log.error(f"[{call_sid}] OpenAI error: {evt.get('error')}")
-
-            except websockets.exceptions.ConnectionClosed as exc:
-                log.warning(f"[{call_sid}] OpenAI disconnected: {exc}")
-
-                if sessions.get(call_sid, {}).get("complete"):
-                    break  # Call already done — no need to reconnect
-
-                log.info(f"[{call_sid}] Reconnecting to OpenAI...")
-                new_ws = await connect_oai()
-                if new_ws:
-                    oai_ws = new_ws
-                    # configure_oai fires automatically when session.created arrives
-                    fn_args                  = ""
-                    last_assistant_item      = None
-                    response_start_timestamp = None
-                else:
-                    log.error(f"[{call_sid}] OpenAI reconnect failed")
-                    break
-
-            except Exception as exc:
-                log.exception(f"[{call_sid}] oai_reader error: {exc}")
-                break
-
-    # -- Twilio audio reader (main loop) --------------------------------------
+    # -- Twilio reader (main loop) --------------------------------------------
 
     try:
-        async for raw in websocket.iter_text():
-            try:
-                data = json.loads(raw)
-            except json.JSONDecodeError:
-                continue
+        async for raw in ws.iter_text():
+            data = json.loads(raw)
+            evt  = data.get("event")
 
-            evt = data.get("event")
+            if evt == "connected":
+                log.info(f"[{call_sid}] Twilio connected  protocol={data.get('protocol')}")
 
-            if evt == "start":
-                call_sid    = data["start"]["callSid"]
-                stream_sid  = data["start"]["streamSid"]
-                session     = sessions.get(call_sid, {})
-                from_number = session.get("from_number", "unknown")
-                log.info(f"[{call_sid}] Stream started  StreamSid={stream_sid}  from={from_number}")
+            elif evt == "start":
+                call_sid   = data["start"]["callSid"]
+                stream_sid = data["start"]["streamSid"]
+                log.info(f"[{call_sid}] Stream started  sid={stream_sid}")
 
-                oai_ws = await connect_oai()
-                if not oai_ws:
-                    log.error(f"[{call_sid}] Cannot reach OpenAI — closing call")
-                    await websocket.close()
-                    break
+                # Connect to OpenAI — exact headers from official demo
+                log.info(f"[{call_sid}] Connecting to OpenAI: {OAI_URL}")
+                oai_ws = await websockets.connect(
+                    OAI_URL,
+                    extra_headers={
+                        "Authorization": f"Bearer {OPENAI_API_KEY}",
+                        "OpenAI-Beta":   "realtime=v1",
+                    },
+                )
+                log.info(f"[{call_sid}] OpenAI connected")
+
+                # Send session.update immediately on open — exact demo pattern
+                session_update = {
+                    "type": "session.update",
+                    "session": {
+                        "modalities":          ["text", "audio"],
+                        "voice":               "alloy",
+                        "input_audio_format":  "g711_ulaw",
+                        "output_audio_format": "g711_ulaw",
+                        "turn_detection":      {"type": "server_vad"},
+                        "input_audio_transcription": {"model": "whisper-1"},
+                    },
+                }
+                raw_su = json.dumps(session_update)
+                log.info(f"[{call_sid}] SENDING session.update: {raw_su}")
+                await oai_ws.send(raw_su)
+
+                # Trigger greeting
+                greeting = json.dumps({
+                    "type": "response.create",
+                    "response": {
+                        "instructions": (
+                            "You are a dispatcher for a plumbing company. "
+                            "Greet the caller briefly and ask what the plumbing issue is."
+                        ),
+                    },
+                })
+                log.info(f"[{call_sid}] SENDING response.create (greeting)")
+                await oai_ws.send(greeting)
 
                 asyncio.create_task(oai_reader())
 
             elif evt == "media":
-                latest_media_timestamp = int(data["media"].get("timestamp", 0))
                 if oai_ws and not oai_ws.closed:
-                    try:
-                        await oai_ws.send(json.dumps({
-                            "type":  "input_audio_buffer.append",
-                            "audio": data["media"]["payload"],
-                        }))
-                    except Exception:
-                        pass  # Drop frame if OAI is mid-reconnect
+                    await oai_ws.send(json.dumps({
+                        "type":  "input_audio_buffer.append",
+                        "audio": data["media"]["payload"],
+                    }))
 
             elif evt == "stop":
                 log.info(f"[{call_sid}] Twilio stream stopped")
                 break
 
-            elif evt == "connected":
-                log.info(f"Twilio: connected  protocol={data.get('protocol')}")
-
     except WebSocketDisconnect:
-        log.info(f"[{call_sid}] Twilio WebSocket disconnected")
+        log.info(f"[{call_sid}] Twilio disconnected")
     except Exception as exc:
         log.exception(f"[{call_sid}] media_stream error: {exc}")
     finally:
@@ -436,30 +199,4 @@ async def media_stream(websocket: WebSocket):
                 await oai_ws.close()
             except Exception:
                 pass
-        log.info(f"[{call_sid}] media_stream handler done")
-
-# ---------------------------------------------------------------------------
-# SMS
-# ---------------------------------------------------------------------------
-
-async def send_sms(call_sid: str, info: dict, from_number: str):
-    body = (
-        f"NEW PLUMBING LEAD\n\n"
-        f"Name: {info.get('name',     'N/A')}\n"
-        f"Phone: {info.get('callback', from_number)}\n"
-        f"Issue: {info.get('issue',   'N/A')}\n"
-        f"Urgency: {info.get('urgency', 'N/A')}\n"
-        f"Address: {info.get('address', 'N/A')}"
-    )
-    log.info(f"[{call_sid}] Sending SMS to {PLUMBER_PHONE_NUMBER}:\n{body}")
-    try:
-        await asyncio.to_thread(
-            lambda: twilio.messages.create(
-                body=body,
-                from_=TWILIO_PHONE_NUMBER,
-                to=PLUMBER_PHONE_NUMBER,
-            )
-        )
-        log.info(f"[{call_sid}] SMS sent")
-    except Exception as exc:
-        log.exception(f"[{call_sid}] SMS failed: {exc}")
+        log.info(f"[{call_sid}] media_stream done")
