@@ -46,7 +46,7 @@ PLUMBER_PHONE_NUMBER = os.getenv("PLUMBER_PHONE_NUMBER", "")
 OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY",       "")
 HOST                 = "ai-plumber-receptionist-production.up.railway.app"
 
-OAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+OAI_URL = "wss://api.openai.com/v1/realtime"
 
 twilio = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app    = FastAPI()
@@ -209,7 +209,6 @@ async def media_stream(websocket: WebSocket):
                     OAI_URL,
                     extra_headers={
                         "Authorization": f"Bearer {OPENAI_API_KEY}",
-                        "OpenAI-Beta":   "realtime=v1",
                     },
                 )
                 log.info(f"[{call_sid}] Connected to OpenAI Realtime (attempt {attempt})")
@@ -225,6 +224,7 @@ async def media_stream(websocket: WebSocket):
         await ws.send(json.dumps({
             "type": "session.update",
             "session": {
+                "model":                    "gpt-4o-realtime-preview",
                 "modalities":               ["text", "audio"],
                 "instructions":             make_instructions(from_number),
                 "voice":                    "alloy",
