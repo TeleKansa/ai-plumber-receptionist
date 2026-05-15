@@ -222,6 +222,7 @@ async def media_stream(websocket: WebSocket):
         await ws.send(json.dumps({
             "type": "session.update",
             "session": {
+                "type":                      "realtime_session",
                 "modalities":                ["text", "audio"],
                 "instructions":              make_instructions(from_number),
                 "voice":                     "alloy",
