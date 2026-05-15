@@ -239,9 +239,12 @@ async def media_stream(websocket: WebSocket):
         session_payload = {
             "type": "session.update",
             "session": {
+                "modalities":          ["text", "audio"],
                 "instructions":        make_instructions(from_number),
+                "voice":               "alloy",
                 "input_audio_format":  "g711_ulaw",
                 "output_audio_format": "g711_ulaw",
+                "turn_detection":      {"type": "server_vad"},
             },
         }
         await oai_send(ws, session_payload)
