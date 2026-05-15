@@ -46,7 +46,7 @@ PLUMBER_PHONE_NUMBER = os.getenv("PLUMBER_PHONE_NUMBER", "")
 OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY",       "")
 HOST                 = "ai-plumber-receptionist-production.up.railway.app"
 
-OAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview"
+OAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
 
 twilio = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app    = FastAPI()
@@ -239,8 +239,8 @@ async def media_stream(websocket: WebSocket):
         session_payload = {
             "type": "session.update",
             "session": {
-                "type":                "realtime",
                 "instructions":        make_instructions(from_number),
+                "input_audio_format":  "g711_ulaw",
                 "output_audio_format": "g711_ulaw",
             },
         }
