@@ -184,15 +184,13 @@ async def media_stream(websocket: WebSocket):
 
     # -- helpers --------------------------------------------------------------
 
-    async def send_audio_to_twilio(pcm24k_b64: str):
+    async def send_audio_to_twilio(audio_b64: str):
         if not stream_sid:
             return
-        pcm24k = base64.b64decode(pcm24k_b64)
-        mulaw  = pcm16_24k_to_mulaw8k(pcm24k)
         await websocket.send_text(json.dumps({
             "event":    "media",
             "streamSid": stream_sid,
-            "media":    {"payload": base64.b64encode(mulaw).decode()},
+            "media":    {"payload": audio_b64},  # g711_ulaw, pass through directly
         }))
 
     async def clear_twilio_audio():
@@ -224,22 +222,20 @@ async def media_stream(websocket: WebSocket):
         await ws.send(json.dumps({
             "type": "session.update",
             "session": {
-                "modalities":               ["text", "audio"],
-                "instructions":             make_instructions(from_number),
-                "voice":                    "alloy",
-                "input_audio_format":       "pcm16",
-                "output_audio_format":      "pcm16",
+                "modalities":                ["text", "audio"],
+                "instructions":              make_instructions(from_number),
+                "voice":                     "alloy",
+                "input_audio_format":        "g711_ulaw",
+                "output_audio_format":       "g711_ulaw",
                 "input_audio_transcription": {"model": "whisper-1"},
                 "turn_detection": {
-                    "type":                 "server_vad",
-                    "threshold":            0.5,
-                    "prefix_padding_ms":    300,
-                    "silence_duration_ms":  600,
-                    "create_response":      True,
+                    "type":               "server_vad",
+                    "threshold":          0.5,
+                    "prefix_padding_ms":  300,
+                    "silence_duration_ms": 600,
                 },
                 "tools":       TOOLS,
                 "tool_choice": "auto",
-                "temperature": 0.7,
             },
         }))
         if trigger_greeting:
@@ -384,12 +380,10 @@ async def media_stream(websocket: WebSocket):
 
             elif evt == "media":
                 if oai_ws and not oai_ws.closed:
-                    raw_mulaw = base64.b64decode(data["media"]["payload"])
-                    pcm24k    = mulaw8k_to_pcm16_24k(raw_mulaw)
                     try:
                         await oai_ws.send(json.dumps({
                             "type":  "input_audio_buffer.append",
-                            "audio": base64.b64encode(pcm24k).decode(),
+                            "audio": data["media"]["payload"],  # raw mulaw, no transcoding needed
                         }))
                     except Exception:
                         pass  # Drop frame if OAI is mid-reconnect
