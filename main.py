@@ -271,12 +271,6 @@ async def media_stream(websocket: WebSocket):
                     evt   = json.loads(raw)
                     etype = evt.get("type", "")
 
-                    # Log every inbound OpenAI event (audio deltas at DEBUG to avoid spam)
-                    if etype == "response.audio.delta":
-                        log.debug(f"[{call_sid}] [OPENAI_IN] type={etype} (audio delta, payload omitted)")
-                    else:
-                        log.info(f"[{call_sid}] [OPENAI_IN] type={etype} raw={raw}")
-
                     if etype == "session.created":
                         log.info(f"[{call_sid}] OpenAI session created — sending session.update now")
                         await configure_oai(oai_ws, trigger_greeting=not greeted)
@@ -389,12 +383,6 @@ async def media_stream(websocket: WebSocket):
                 continue
 
             evt = data.get("event")
-
-            # Log every inbound Twilio message (media frames at DEBUG)
-            if evt == "media":
-                log.debug(f"[{call_sid}] [TWILIO] IN event=media ts={data['media'].get('timestamp')}")
-            else:
-                log.info(f"[{call_sid}] [TWILIO] IN event={evt} raw={raw}")
 
             if evt == "start":
                 call_sid    = data["start"]["callSid"]
