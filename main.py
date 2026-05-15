@@ -9,6 +9,8 @@ Session pattern mirrors the official OpenAI Twilio demo:
 """
 
 import asyncio
+import audioop
+import base64
 import json
 import logging
 import os
@@ -112,10 +114,14 @@ async def media_stream(ws: WebSocket):
             if etype == "response.output_audio.delta":
                 delta = evt.get("delta", "")
                 if delta and stream_sid:
+                    # OpenAI outputs pcm16 24kHz → transcode to mulaw 8kHz for Twilio
+                    pcm24k = base64.b64decode(delta)
+                    pcm8k, _ = audioop.ratecv(pcm24k, 2, 1, 24000, 8000, None)
+                    mulaw = audioop.lin2ulaw(pcm8k, 2)
                     await ws.send_text(json.dumps({
                         "event":    "media",
                         "streamSid": stream_sid,
-                        "media":    {"payload": delta},
+                        "media":    {"payload": base64.b64encode(mulaw).decode()},
                     }))
 
             elif etype == "error":
@@ -150,11 +156,9 @@ async def media_stream(ws: WebSocket):
                 session_update = {
                     "type": "session.update",
                     "session": {
-                        "modalities":          ["text", "audio"],
-                        "voice":               "alloy",
-                        "input_audio_format":  "g711_ulaw",
-                        "output_audio_format": "g711_ulaw",
-                        "turn_detection":      {"type": "server_vad"},
+                        "modalities":                ["text", "audio"],
+                        "voice":                     "alloy",
+                        "turn_detection":            {"type": "server_vad"},
                         "input_audio_transcription": {"model": "whisper-1"},
                     },
                 }
@@ -179,9 +183,13 @@ async def media_stream(ws: WebSocket):
 
             elif evt == "media":
                 if oai_ws and not oai_ws.closed:
+                    # Twilio sends mulaw 8kHz → transcode to pcm16 24kHz for OpenAI
+                    mulaw = base64.b64decode(data["media"]["payload"])
+                    pcm8k = audioop.ulaw2lin(mulaw, 2)
+                    pcm24k, _ = audioop.ratecv(pcm8k, 2, 1, 8000, 24000, None)
                     await oai_ws.send(json.dumps({
                         "type":  "input_audio_buffer.append",
-                        "audio": data["media"]["payload"],
+                        "audio": base64.b64encode(pcm24k).decode(),
                     }))
 
             elif evt == "stop":
