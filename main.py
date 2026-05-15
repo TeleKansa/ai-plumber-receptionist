@@ -109,7 +109,7 @@ async def media_stream(ws: WebSocket):
             if etype != "response.audio.delta":
                 log.info(f"[{call_sid}] [OAI_IN] {etype}")
 
-            if etype == "response.audio.delta":
+            if etype == "response.output_audio.delta":
                 delta = evt.get("delta", "")
                 if delta and stream_sid:
                     await ws.send_text(json.dumps({
