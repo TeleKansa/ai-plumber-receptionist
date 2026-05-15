@@ -225,10 +225,10 @@ async def media_stream(websocket: WebSocket):
         return None
 
     async def configure_oai(ws, trigger_greeting: bool = True):
-        await ws.send(json.dumps({
+        session_payload = {
             "type": "session.update",
             "session": {
-                "modalities":                ["text", "audio"],
+                "type":                      "realtime",
                 "instructions":              make_instructions(from_number),
                 "voice":                     "alloy",
                 "input_audio_format":        "g711_ulaw",
@@ -243,7 +243,9 @@ async def media_stream(websocket: WebSocket):
                 "tools":       TOOLS,
                 "tool_choice": "auto",
             },
-        }))
+        }
+        log.info(f"[{call_sid}] >>> session.update payload: {json.dumps(session_payload)}")
+        await ws.send(json.dumps(session_payload))
         if trigger_greeting:
             await ws.send(json.dumps({
                 "type": "response.create",
