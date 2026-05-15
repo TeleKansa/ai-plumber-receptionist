@@ -230,8 +230,6 @@ async def media_stream(websocket: WebSocket):
             "session": {
                 "type":                      "realtime",
                 "instructions":              make_instructions(from_number),
-                "input_audio_format":        "g711_ulaw",
-                "output_audio_format":       "g711_ulaw",
                 "input_audio_transcription": {"model": "whisper-1"},
                 "turn_detection": {
                     "type":               "server_vad",
