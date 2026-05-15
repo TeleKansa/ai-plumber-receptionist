@@ -237,8 +237,9 @@ async def media_stream(websocket: WebSocket):
         log.info(f"[{call_sid}] FINAL_SEND_TO_OPENAI: {raw}")
         return ws.send(raw)
 
-    async def configure_oai(ws, trigger_greeting: bool = True):
-        session_payload = {
+    async def configure_oai(ws):
+        session_update_event = {
+            "event_id": "init_session",
             "type": "session.update",
             "session": {
                 "modalities":          ["text", "audio"],
@@ -249,17 +250,9 @@ async def media_stream(websocket: WebSocket):
                 "turn_detection":      {"type": "server_vad"},
             },
         }
-        await oai_send(ws, session_payload)
-        # response.create temporarily disabled to isolate session.update errors
-        # if trigger_greeting:
-        #     greeting_payload = {
-        #         "type": "response.create",
-        #         "response": {
-        #             "instructions": "Greet briefly and ask what the plumbing issue is.",
-        #         },
-        #     }
-        #     await oai_send(ws, greeting_payload)
-        #     log.info(f"[{call_sid}] OpenAI session configured, greeting triggered")
+        raw = json.dumps(session_update_event)
+        log.info(f"[{call_sid}] STRIPPING ALL ABSTRACTIONS. SENDING RAW EVENT. payload={raw}")
+        await ws.send(raw)
 
     # -- OpenAI event handler (runs as background task) -----------------------
 
@@ -279,8 +272,18 @@ async def media_stream(websocket: WebSocket):
 
                     if etype == "session.created":
                         log.info(f"[{call_sid}] OpenAI session created — sending session.update now")
-                        await configure_oai(oai_ws, trigger_greeting=not greeted)
-                        greeted = True
+                        await configure_oai(oai_ws)
+
+                    elif etype == "session.updated":
+                        log.info(f"[{call_sid}] OpenAI session updated — sending response.create now")
+                        if not greeted:
+                            greeted = True
+                            greeting_raw = json.dumps({
+                                "type": "response.create",
+                                "response": {"instructions": "Greet briefly and ask what the plumbing issue is."},
+                            })
+                            log.info(f"[{call_sid}] FINAL_SEND_TO_OPENAI: {greeting_raw}")
+                            await oai_ws.send(greeting_raw)
 
                     elif etype == "input_audio_buffer.speech_started":
                         log.info(f"[{call_sid}] Barge-in detected")
@@ -367,7 +370,7 @@ async def media_stream(websocket: WebSocket):
                 new_ws = await connect_oai()
                 if new_ws:
                     oai_ws = new_ws
-                    # configure_oai will be called when session.created fires
+                    # configure_oai fires automatically when session.created arrives
                     fn_args                  = ""
                     last_assistant_item      = None
                     response_start_timestamp = None
