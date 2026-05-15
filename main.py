@@ -176,11 +176,13 @@ async def media_stream(websocket: WebSocket):
         return
     log.info(">>> /media-stream accepted")
 
-    call_sid    : Optional[str] = None
-    stream_sid  : Optional[str] = None
-    from_number : str           = "unknown"
-    oai_ws      : Optional[websockets.WebSocketClientProtocol] = None
-    is_responding               = False   # True while OAI is streaming audio out
+    call_sid                : Optional[str] = None
+    stream_sid              : Optional[str] = None
+    from_number             : str           = "unknown"
+    oai_ws                  : Optional[websockets.WebSocketClientProtocol] = None
+    latest_media_timestamp  : int           = 0   # ms timestamp of last Twilio media frame
+    response_start_timestamp: Optional[int] = None  # ms timestamp when AI audio began
+    last_assistant_item     : Optional[str] = None  # item_id of in-progress AI audio item
 
     # -- helpers --------------------------------------------------------------
 
@@ -190,7 +192,11 @@ async def media_stream(websocket: WebSocket):
         await websocket.send_text(json.dumps({
             "event":    "media",
             "streamSid": stream_sid,
-            "media":    {"payload": audio_b64},  # g711_ulaw, pass through directly
+            "media":    {"payload": audio_b64},
+        }))
+        await websocket.send_text(json.dumps({
+            "event":    "mark",
+            "streamSid": stream_sid,
         }))
 
     async def clear_twilio_audio():
@@ -250,7 +256,7 @@ async def media_stream(websocket: WebSocket):
     # -- OpenAI event handler (runs as background task) -----------------------
 
     async def oai_reader():
-        nonlocal oai_ws, is_responding
+        nonlocal oai_ws, latest_media_timestamp, response_start_timestamp, last_assistant_item
         fn_args = ""
         fn_call_id = None
         fn_name    = None
@@ -267,26 +273,38 @@ async def media_stream(websocket: WebSocket):
                         log.info(f"[{call_sid}] OpenAI session created")
 
                     elif etype == "input_audio_buffer.speech_started":
-                        # Caller started speaking — cancel current AI response (barge-in)
                         log.info(f"[{call_sid}] Barge-in detected")
-                        is_responding = False
-                        try:
-                            await oai_ws.send(json.dumps({"type": "response.cancel"}))
-                        except Exception:
-                            pass
+                        # Truncate the in-progress assistant audio item at the exact playback position
+                        if last_assistant_item and response_start_timestamp is not None:
+                            elapsed_ms = max(0, latest_media_timestamp - response_start_timestamp)
+                            try:
+                                await oai_ws.send(json.dumps({
+                                    "type":          "conversation.item.truncate",
+                                    "item_id":       last_assistant_item,
+                                    "content_index": 0,
+                                    "audio_end_ms":  elapsed_ms,
+                                }))
+                            except Exception:
+                                pass
                         await clear_twilio_audio()
+                        last_assistant_item      = None
+                        response_start_timestamp = None
 
                     elif etype == "response.audio.delta":
-                        is_responding = True
                         delta = evt.get("delta", "")
                         if delta:
+                            if response_start_timestamp is None:
+                                response_start_timestamp = latest_media_timestamp
+                            if evt.get("item_id"):
+                                last_assistant_item = evt["item_id"]
                             try:
                                 await send_audio_to_twilio(delta)
                             except Exception as exc:
                                 log.warning(f"[{call_sid}] Audio send error: {exc}")
 
                     elif etype == "response.audio.done":
-                        is_responding = False
+                        last_assistant_item      = None
+                        response_start_timestamp = None
 
                     elif etype == "response.function_call_arguments.delta":
                         fn_args += evt.get("delta", "")
@@ -340,9 +358,10 @@ async def media_stream(websocket: WebSocket):
                 new_ws = await connect_oai()
                 if new_ws:
                     oai_ws = new_ws
-                    # Re-configure session without re-greeting (caller already heard intro)
                     await configure_oai(oai_ws, trigger_greeting=False)
-                    fn_args = ""  # Reset in-flight function state
+                    fn_args                  = ""
+                    last_assistant_item      = None
+                    response_start_timestamp = None
                 else:
                     log.error(f"[{call_sid}] OpenAI reconnect failed")
                     break
@@ -379,11 +398,12 @@ async def media_stream(websocket: WebSocket):
                 await configure_oai(oai_ws, trigger_greeting=True)
 
             elif evt == "media":
+                latest_media_timestamp = int(data["media"].get("timestamp", 0))
                 if oai_ws and not oai_ws.closed:
                     try:
                         await oai_ws.send(json.dumps({
                             "type":  "input_audio_buffer.append",
-                            "audio": data["media"]["payload"],  # raw mulaw, no transcoding needed
+                            "audio": data["media"]["payload"],
                         }))
                     except Exception:
                         pass  # Drop frame if OAI is mid-reconnect
