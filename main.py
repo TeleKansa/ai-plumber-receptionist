@@ -183,6 +183,7 @@ async def media_stream(websocket: WebSocket):
     latest_media_timestamp  : int           = 0   # ms timestamp of last Twilio media frame
     response_start_timestamp: Optional[int] = None  # ms timestamp when AI audio began
     last_assistant_item     : Optional[str] = None  # item_id of in-progress AI audio item
+    greeted                 : bool          = False  # True after first greeting is sent
 
     # -- helpers --------------------------------------------------------------
 
@@ -238,7 +239,9 @@ async def media_stream(websocket: WebSocket):
         session_payload = {
             "type": "session.update",
             "session": {
-                "type": "realtime",
+                "type":                "realtime",
+                "instructions":        make_instructions(from_number),
+                "output_audio_format": "g711_ulaw",
             },
         }
         await oai_send(ws, session_payload)
@@ -255,7 +258,7 @@ async def media_stream(websocket: WebSocket):
     # -- OpenAI event handler (runs as background task) -----------------------
 
     async def oai_reader():
-        nonlocal oai_ws, latest_media_timestamp, response_start_timestamp, last_assistant_item
+        nonlocal oai_ws, latest_media_timestamp, response_start_timestamp, last_assistant_item, greeted
         fn_args = ""
         fn_call_id = None
         fn_name    = None
@@ -275,7 +278,9 @@ async def media_stream(websocket: WebSocket):
                         log.info(f"[{call_sid}] [OPENAI_IN] type={etype} raw={raw}")
 
                     if etype == "session.created":
-                        log.info(f"[{call_sid}] OpenAI session created")
+                        log.info(f"[{call_sid}] OpenAI session created — sending session.update now")
+                        await configure_oai(oai_ws, trigger_greeting=not greeted)
+                        greeted = True
 
                     elif etype == "input_audio_buffer.speech_started":
                         log.info(f"[{call_sid}] Barge-in detected")
@@ -362,7 +367,7 @@ async def media_stream(websocket: WebSocket):
                 new_ws = await connect_oai()
                 if new_ws:
                     oai_ws = new_ws
-                    await configure_oai(oai_ws, trigger_greeting=False)
+                    # configure_oai will be called when session.created fires
                     fn_args                  = ""
                     last_assistant_item      = None
                     response_start_timestamp = None
@@ -405,7 +410,6 @@ async def media_stream(websocket: WebSocket):
                     break
 
                 asyncio.create_task(oai_reader())
-                await configure_oai(oai_ws, trigger_greeting=True)
 
             elif evt == "media":
                 latest_media_timestamp = int(data["media"].get("timestamp", 0))
