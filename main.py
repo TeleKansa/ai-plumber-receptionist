@@ -265,13 +265,11 @@ async def media_stream(ws: WebSocket):
                 session_update = {
                     "type": "session.update",
                     "session": {
-                        "modalities":                ["text", "audio"],
-                        "instructions":              make_instructions(from_number),
-                        "voice":                     "alloy",
-                        "turn_detection":            {"type": "server_vad"},
-                        "input_audio_transcription": {"model": "whisper-1"},
-                        "tools":                     TOOLS,
-                        "tool_choice":               "auto",
+                        "type":         "realtime",
+                        "instructions": make_instructions(from_number),
+                        "turn_detection": {"type": "server_vad"},
+                        "tools":        TOOLS,
+                        "tool_choice":  "auto",
                     },
                 }
                 raw_su = json.dumps(session_update)
