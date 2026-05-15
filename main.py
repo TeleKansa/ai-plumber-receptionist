@@ -24,6 +24,7 @@ from typing import Optional
 
 import websockets
 import websockets.exceptions
+import anthropic
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
@@ -366,6 +367,29 @@ async def media_stream(websocket: WebSocket):
 # Core conversation logic
 # ---------------------------------------------------------------------------
 
+async def claude_with_retry(call_sid: str, label: str, **kwargs):
+    """
+    Call the Anthropic API with up to 3 retries on 529 (overloaded) errors.
+    Backoff: 1 s, 2 s, 4 s. Returns the response, or None if all attempts fail.
+    """
+    delays = [1, 2, 4]
+    for attempt, delay in enumerate(delays, start=1):
+        try:
+            return await anthropic_client.messages.create(**kwargs)
+        except anthropic.APIStatusError as exc:
+            if exc.status_code == 529:
+                log.warning(f"[{call_sid}] Claude {label} overloaded (529) — attempt {attempt}/3, retrying in {delay}s")
+                await asyncio.sleep(delay)
+            else:
+                log.exception(f"[{call_sid}] Claude {label} API error (status {exc.status_code}): {exc}")
+                return None
+        except Exception as exc:
+            log.exception(f"[{call_sid}] Claude {label} unexpected error: {exc}")
+            return None
+    log.error(f"[{call_sid}] Claude {label} failed after 3 retries (529 overloaded)")
+    return None
+
+
 async def handle_transcript(call_sid: str, transcript: str):
     session = sessions.get(call_sid)
     if not session:
@@ -377,16 +401,16 @@ async def handle_transcript(call_sid: str, transcript: str):
 
     # -- Call 1: conversational response --------------------------------------
     log.info(f"[{call_sid}] Calling Claude (conversation) — {len(session['messages'])} messages")
-    try:
-        conv_response = await anthropic_client.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=256,
-            system=SYSTEM_PROMPT,
-            messages=session["messages"],
-        )
-    except Exception as exc:
-        log.exception(f"[{call_sid}] Claude conversation error: {exc}")
-        await speak_and_update(call_sid, "I'm sorry, I had a technical issue. Could you please repeat that?", reconnect=True, host=host)
+    conv_response = await claude_with_retry(
+        call_sid, "conversation",
+        model="claude-opus-4-5",
+        max_tokens=256,
+        system=SYSTEM_PROMPT,
+        messages=session["messages"],
+    )
+    if conv_response is None:
+        log.warning(f"[{call_sid}] Conversation call failed — using fallback response")
+        await speak_and_update(call_sid, "I'm sorry, could you please repeat that?", reconnect=True, host=host)
         return
 
     assistant_text = "".join(b.text for b in conv_response.content if b.type == "text").strip()
@@ -400,16 +424,15 @@ async def handle_transcript(call_sid: str, transcript: str):
         for m in session["messages"]
     )
     log.info(f"[{call_sid}] Calling Claude (checker) to assess completion")
-    try:
-        check_response = await anthropic_client.messages.create(
-            model="claude-opus-4-5",
-            max_tokens=256,
-            system=CHECKER_PROMPT,
-            messages=[{"role": "user", "content": convo_text}],
-        )
-    except Exception as exc:
-        log.exception(f"[{call_sid}] Claude checker error: {exc}")
-        # Checker failed — just continue the conversation normally
+    check_response = await claude_with_retry(
+        call_sid, "checker",
+        model="claude-opus-4-5",
+        max_tokens=256,
+        system=CHECKER_PROMPT,
+        messages=[{"role": "user", "content": convo_text}],
+    )
+    if check_response is None:
+        log.warning(f"[{call_sid}] Checker call failed — continuing conversation without completion check")
         await speak_and_update(call_sid, assistant_text, reconnect=True, host=host)
         return
 
