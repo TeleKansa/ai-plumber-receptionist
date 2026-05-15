@@ -189,11 +189,13 @@ async def media_stream(websocket: WebSocket):
     async def send_audio_to_twilio(audio_b64: str):
         if not stream_sid:
             return
+        log.debug(f"[{call_sid}] [TWILIO] OUT event=media (audio payload omitted)")
         await websocket.send_text(json.dumps({
             "event":    "media",
             "streamSid": stream_sid,
             "media":    {"payload": audio_b64},
         }))
+        log.debug(f"[{call_sid}] [TWILIO] OUT event=mark")
         await websocket.send_text(json.dumps({
             "event":    "mark",
             "streamSid": stream_sid,
@@ -201,6 +203,7 @@ async def media_stream(websocket: WebSocket):
 
     async def clear_twilio_audio():
         if stream_sid:
+            log.info(f"[{call_sid}] [TWILIO] OUT event=clear")
             await websocket.send_text(json.dumps({
                 "event":     "clear",
                 "streamSid": stream_sid,
@@ -224,6 +227,13 @@ async def media_stream(websocket: WebSocket):
         log.error(f"[{call_sid}] All OpenAI connect attempts failed")
         return None
 
+    def oai_send(ws, payload: dict):
+        """Send a message to OpenAI and log it."""
+        raw = json.dumps(payload)
+        msg_type = payload.get("type", "unknown")
+        log.info(f"[{call_sid}] [OPENAI_OUT] type={msg_type} payload={raw}")
+        return ws.send(raw)
+
     async def configure_oai(ws, trigger_greeting: bool = True):
         session_payload = {
             "type": "session.update",
@@ -231,15 +241,15 @@ async def media_stream(websocket: WebSocket):
                 "type": "realtime",
             },
         }
-        log.info(f"[{call_sid}] >>> session.update payload: {json.dumps(session_payload)}")
-        await ws.send(json.dumps(session_payload))
+        await oai_send(ws, session_payload)
         if trigger_greeting:
-            await ws.send(json.dumps({
+            greeting_payload = {
                 "type": "response.create",
                 "response": {
                     "instructions": "Greet briefly and ask what the plumbing issue is.",
                 },
-            }))
+            }
+            await oai_send(ws, greeting_payload)
             log.info(f"[{call_sid}] OpenAI session configured, greeting triggered")
 
     # -- OpenAI event handler (runs as background task) -----------------------
@@ -258,21 +268,27 @@ async def media_stream(websocket: WebSocket):
                     evt   = json.loads(raw)
                     etype = evt.get("type", "")
 
+                    # Log every inbound OpenAI event (audio deltas at DEBUG to avoid spam)
+                    if etype == "response.audio.delta":
+                        log.debug(f"[{call_sid}] [OPENAI_IN] type={etype} (audio delta, payload omitted)")
+                    else:
+                        log.info(f"[{call_sid}] [OPENAI_IN] type={etype} raw={raw}")
+
                     if etype == "session.created":
                         log.info(f"[{call_sid}] OpenAI session created")
 
                     elif etype == "input_audio_buffer.speech_started":
                         log.info(f"[{call_sid}] Barge-in detected")
-                        # Truncate the in-progress assistant audio item at the exact playback position
                         if last_assistant_item and response_start_timestamp is not None:
                             elapsed_ms = max(0, latest_media_timestamp - response_start_timestamp)
+                            truncate_payload = {
+                                "type":          "conversation.item.truncate",
+                                "item_id":       last_assistant_item,
+                                "content_index": 0,
+                                "audio_end_ms":  elapsed_ms,
+                            }
                             try:
-                                await oai_ws.send(json.dumps({
-                                    "type":          "conversation.item.truncate",
-                                    "item_id":       last_assistant_item,
-                                    "content_index": 0,
-                                    "audio_end_ms":  elapsed_ms,
-                                }))
+                                await oai_send(oai_ws, truncate_payload)
                             except Exception:
                                 pass
                         await clear_twilio_audio()
@@ -316,17 +332,16 @@ async def media_stream(websocket: WebSocket):
 
                             await send_sms(call_sid, args, session.get("from_number", "unknown"))
 
-                            # Return result so AI gives the closing line
                             try:
-                                await oai_ws.send(json.dumps({
+                                await oai_send(oai_ws, {
                                     "type": "conversation.item.create",
                                     "item": {
                                         "type":    "function_call_output",
                                         "call_id": fn_call_id,
                                         "output":  json.dumps({"success": True}),
                                     },
-                                }))
-                                await oai_ws.send(json.dumps({"type": "response.create"}))
+                                })
+                                await oai_send(oai_ws, {"type": "response.create"})
                             except Exception as exc:
                                 log.warning(f"[{call_sid}] Could not send function result: {exc}")
 
@@ -369,6 +384,12 @@ async def media_stream(websocket: WebSocket):
                 continue
 
             evt = data.get("event")
+
+            # Log every inbound Twilio message (media frames at DEBUG)
+            if evt == "media":
+                log.debug(f"[{call_sid}] [TWILIO] IN event=media ts={data['media'].get('timestamp')}")
+            else:
+                log.info(f"[{call_sid}] [TWILIO] IN event={evt} raw={raw}")
 
             if evt == "start":
                 call_sid    = data["start"]["callSid"]
