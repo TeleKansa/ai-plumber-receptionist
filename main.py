@@ -246,7 +246,6 @@ async def media_stream(websocket: WebSocket):
             await ws.send(json.dumps({
                 "type": "response.create",
                 "response": {
-                    "modalities":   ["text", "audio"],
                     "instructions": "Greet briefly and ask what the plumbing issue is.",
                 },
             }))
