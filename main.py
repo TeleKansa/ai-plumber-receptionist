@@ -211,10 +211,12 @@ async def media_stream(websocket: WebSocket):
             }))
 
     async def connect_oai() -> Optional[websockets.WebSocketClientProtocol]:
+        OPENAI_WS_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
         for attempt in range(1, 4):
             try:
+                log.info(f"DEBUG: Connecting to OpenAI with URL: {OPENAI_WS_URL}")
                 ws = await websockets.connect(
-                    OAI_URL,
+                    OPENAI_WS_URL,
                     extra_headers={
                         "Authorization": f"Bearer {OPENAI_API_KEY}",
                     },
@@ -248,15 +250,16 @@ async def media_stream(websocket: WebSocket):
             },
         }
         await oai_send(ws, session_payload)
-        if trigger_greeting:
-            greeting_payload = {
-                "type": "response.create",
-                "response": {
-                    "instructions": "Greet briefly and ask what the plumbing issue is.",
-                },
-            }
-            await oai_send(ws, greeting_payload)
-            log.info(f"[{call_sid}] OpenAI session configured, greeting triggered")
+        # response.create temporarily disabled to isolate session.update errors
+        # if trigger_greeting:
+        #     greeting_payload = {
+        #         "type": "response.create",
+        #         "response": {
+        #             "instructions": "Greet briefly and ask what the plumbing issue is.",
+        #         },
+        #     }
+        #     await oai_send(ws, greeting_payload)
+        #     log.info(f"[{call_sid}] OpenAI session configured, greeting triggered")
 
     # -- OpenAI event handler (runs as background task) -----------------------
 
