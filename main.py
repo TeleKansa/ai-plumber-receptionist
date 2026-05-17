@@ -245,6 +245,8 @@ async def media_stream(ws: WebSocket):
     stream_sid: Optional[str] = None
     from_number: str          = "unknown"
     oai_ws    : Optional[websockets.WebSocketClientProtocol] = None
+    twilio_to_oai_state = None
+    oai_to_twilio_state = None
 
     # -- OpenAI reader (background task) -------------------------------------
 
@@ -256,6 +258,8 @@ async def media_stream(ws: WebSocket):
             }))
 
     async def oai_reader():
+        nonlocal oai_to_twilio_state
+
         async for raw in oai_ws:
             evt   = json.loads(raw)
             etype = evt.get("type", "")
@@ -268,7 +272,9 @@ async def media_stream(ws: WebSocket):
                 delta = evt.get("delta", "")
                 if delta and stream_sid:
                     pcm24k = base64.b64decode(delta)
-                    pcm8k, _ = audioop.ratecv(pcm24k, 2, 1, 24000, 8000, None)
+                    pcm8k, oai_to_twilio_state = audioop.ratecv(
+                        pcm24k, 2, 1, 24000, 8000, oai_to_twilio_state
+                    )
                     mulaw = audioop.lin2ulaw(pcm8k, 2)
                     await ws.send_text(json.dumps({
                         "event":     "media",
@@ -394,7 +400,9 @@ async def media_stream(ws: WebSocket):
                     # Twilio mulaw 8kHz → pcm16 24kHz → OpenAI
                     mulaw = base64.b64decode(data["media"]["payload"])
                     pcm8k = audioop.ulaw2lin(mulaw, 2)
-                    pcm24k, _ = audioop.ratecv(pcm8k, 2, 1, 8000, 24000, None)
+                    pcm24k, twilio_to_oai_state = audioop.ratecv(
+                        pcm8k, 2, 1, 8000, 24000, twilio_to_oai_state
+                    )
                     await oai_ws.send(json.dumps({
                         "type":  "input_audio_buffer.append",
                         "audio": base64.b64encode(pcm24k).decode(),
