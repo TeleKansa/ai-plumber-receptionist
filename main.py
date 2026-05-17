@@ -259,6 +259,8 @@ async def media_stream(ws: WebSocket):
 
     async def oai_reader():
         nonlocal oai_to_twilio_state
+        assistant_transcript = ""
+        caller_transcript = ""
 
         async for raw in oai_ws:
             evt   = json.loads(raw)
@@ -281,6 +283,32 @@ async def media_stream(ws: WebSocket):
                         "streamSid": stream_sid,
                         "media":     {"payload": base64.b64encode(mulaw).decode()},
                     }))
+
+            elif etype == "response.output_audio_transcript.delta":
+                assistant_transcript += evt.get("delta", "")
+
+            elif etype == "response.output_audio_transcript.done":
+                transcript = evt.get("transcript") or assistant_transcript
+                if transcript.strip():
+                    log.info(f"[{call_sid}] AI said: {transcript.strip()}")
+                assistant_transcript = ""
+
+            elif etype in (
+                "conversation.item.input_audio_transcription.delta",
+                "input_audio_transcription.delta",
+            ):
+                caller_transcript += evt.get("delta", "")
+
+            elif etype in (
+                "conversation.item.input_audio_transcription.completed",
+                "conversation.item.input_audio_transcription.done",
+                "input_audio_transcription.completed",
+                "input_audio_transcription.done",
+            ):
+                transcript = evt.get("transcript") or caller_transcript
+                if transcript.strip():
+                    log.info(f"[{call_sid}] Caller said: {transcript.strip()}")
+                caller_transcript = ""
 
             # Function call — GA API delivers complete call in response.output_item.done
             elif etype == "session.updated":
