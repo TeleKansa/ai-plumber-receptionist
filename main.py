@@ -41,7 +41,7 @@ TWILIO_PHONE_NUMBER  = os.getenv("TWILIO_PHONE_NUMBER",  "")
 PLUMBER_PHONE_NUMBER = os.getenv("PLUMBER_PHONE_NUMBER", "")
 HOST = "ai-plumber-receptionist-production.up.railway.app"
 
-OAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview-2024-12-17"
+OAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-1.5"
 
 twilio = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app    = FastAPI()
