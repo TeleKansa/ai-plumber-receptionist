@@ -178,7 +178,7 @@ async def voice(request: Request):
 # SMS
 # ---------------------------------------------------------------------------
 
-async def send_sms(call_sid: str, info: dict, from_number: str):
+async def send_sms(call_sid: str, info: dict, from_number: str) -> bool:
     body = (
         f"NEW PLUMBING LEAD\n\n"
         f"Name: {info.get('name',     'N/A')}\n"
@@ -197,8 +197,19 @@ async def send_sms(call_sid: str, info: dict, from_number: str):
             )
         )
         log.info(f"[{call_sid}] SMS sent")
+        return True
     except Exception as exc:
         log.exception(f"[{call_sid}] SMS failed: {exc}")
+        return False
+
+
+async def hangup_call(call_sid: str, delay_seconds: float = 2.0):
+    await asyncio.sleep(delay_seconds)
+    try:
+        await asyncio.to_thread(lambda: twilio.calls(call_sid).update(status="completed"))
+        log.info(f"[{call_sid}] Call ended")
+    except Exception as exc:
+        log.exception(f"[{call_sid}] Failed to end call: {exc}")
 
 # ---------------------------------------------------------------------------
 # Media-stream WebSocket
@@ -238,6 +249,23 @@ async def media_stream(ws: WebSocket):
                     }))
 
             # Function call — GA API delivers complete call in response.output_item.done
+            elif etype == "response.created":
+                session = sessions.get(call_sid, {})
+                if session.get("pending_hangup") and not session.get("closing_response_started"):
+                    session["closing_response_started"] = True
+                    log.info(f"[{call_sid}] Closing response started")
+
+            elif etype == "response.done":
+                session = sessions.get(call_sid, {})
+                if (
+                    session.get("pending_hangup")
+                    and session.get("closing_response_started")
+                    and not session.get("hangup_scheduled")
+                ):
+                    session["hangup_scheduled"] = True
+                    log.info(f"[{call_sid}] Closing response done; scheduling hangup")
+                    asyncio.create_task(hangup_call(call_sid))
+
             elif etype == "response.output_item.done":
                 item = evt.get("item", {})
                 if item.get("type") == "function_call" and item.get("name") == "submit_service_request":
@@ -252,7 +280,7 @@ async def media_stream(ws: WebSocket):
                     session["complete"] = True
                     log.info(f"[{call_sid}] submit_service_request: {args}")
 
-                    await send_sms(call_sid, args, session.get("from_number", "unknown"))
+                    sms_sent = await send_sms(call_sid, args, session.get("from_number", "unknown"))
 
                     # Return result so AI delivers the closing line
                     await oai_ws.send(json.dumps({
@@ -263,6 +291,9 @@ async def media_stream(ws: WebSocket):
                             "output":  json.dumps({"success": True}),
                         },
                     }))
+                    if sms_sent:
+                        session["pending_hangup"] = True
+                        session["closing_response_started"] = False
                     await oai_ws.send(json.dumps({"type": "response.create"}))
 
             elif etype == "error":
