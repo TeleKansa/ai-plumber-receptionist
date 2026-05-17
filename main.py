@@ -247,6 +247,9 @@ async def media_stream(ws: WebSocket):
     oai_ws    : Optional[websockets.WebSocketClientProtocol] = None
     twilio_to_oai_state = None
     oai_to_twilio_state = None
+    assistant_speaking = False
+    response_active = False
+    suppress_input_until = 0.0
 
     # -- OpenAI reader (background task) -------------------------------------
 
@@ -258,7 +261,7 @@ async def media_stream(ws: WebSocket):
             }))
 
     async def oai_reader():
-        nonlocal oai_to_twilio_state
+        nonlocal assistant_speaking, oai_to_twilio_state, response_active, suppress_input_until
         assistant_transcript = ""
         caller_transcript = ""
 
@@ -273,6 +276,7 @@ async def media_stream(ws: WebSocket):
             if etype == "response.output_audio.delta":
                 delta = evt.get("delta", "")
                 if delta and stream_sid:
+                    assistant_speaking = True
                     pcm24k = base64.b64decode(delta)
                     pcm8k, oai_to_twilio_state = audioop.ratecv(
                         pcm24k, 2, 1, 24000, 8000, oai_to_twilio_state
@@ -292,6 +296,10 @@ async def media_stream(ws: WebSocket):
                 if transcript.strip():
                     log.info(f"[{call_sid}] AI said: {transcript.strip()}")
                 assistant_transcript = ""
+
+            elif etype == "response.output_audio.done":
+                assistant_speaking = False
+                suppress_input_until = asyncio.get_running_loop().time() + 0.6
 
             elif etype in (
                 "conversation.item.input_audio_transcription.delta",
@@ -327,21 +335,29 @@ async def media_stream(ws: WebSocket):
 
             elif etype == "input_audio_buffer.speech_started":
                 session = sessions.get(call_sid, {})
-                if not session.get("complete"):
+                if assistant_speaking or asyncio.get_running_loop().time() < suppress_input_until:
+                    log.info(f"[{call_sid}] Ignoring speech_started during AI audio/suppress window")
+                elif not session.get("complete") and response_active:
                     log.info(f"[{call_sid}] Caller speech started; canceling current AI audio")
                     try:
                         await oai_ws.send(json.dumps({"type": "response.cancel"}))
                     except Exception as exc:
                         log.info(f"[{call_sid}] response.cancel ignored: {exc}")
                     await clear_twilio_audio()
+                else:
+                    log.info(f"[{call_sid}] Caller speech started")
 
             elif etype == "response.created":
+                response_active = True
                 session = sessions.get(call_sid, {})
                 if session.get("pending_hangup") and not session.get("closing_response_started"):
                     session["closing_response_started"] = True
                     log.info(f"[{call_sid}] Closing response started")
 
             elif etype == "response.done":
+                response_active = False
+                assistant_speaking = False
+                suppress_input_until = max(suppress_input_until, asyncio.get_running_loop().time() + 0.6)
                 session = sessions.get(call_sid, {})
                 if (
                     session.get("pending_hangup")
@@ -431,6 +447,9 @@ async def media_stream(ws: WebSocket):
 
             elif evt == "media":
                 if oai_ws and not oai_ws.closed:
+                    if assistant_speaking or asyncio.get_running_loop().time() < suppress_input_until:
+                        continue
+
                     # Twilio mulaw 8kHz → pcm16 24kHz → OpenAI
                     mulaw = base64.b64decode(data["media"]["payload"])
                     pcm8k = audioop.ulaw2lin(mulaw, 2)
