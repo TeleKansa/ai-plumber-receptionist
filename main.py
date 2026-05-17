@@ -151,15 +151,13 @@ TOOLS = [
 ]
 
 
-def build_session_update(caller_number: str, include_max_output_tokens: bool = True) -> dict:
+def build_session_update(caller_number: str) -> dict:
     session = {
         "type":        "realtime",
         "instructions": make_instructions(caller_number),
         "tools":       TOOLS,
         "tool_choice": "auto",
     }
-    if include_max_output_tokens:
-        session["max_output_tokens"] = 45
     return {
         "type": "session.update",
         "session": session,
@@ -343,7 +341,6 @@ async def media_stream(ws: WebSocket):
                         "type": "response.create",
                         "response": {
                             "instructions": 'Say only: "Plumbing office, what\'s going on?" Then stop.',
-                            "max_output_tokens": 35,
                         },
                     })
                     await oai_ws.send(greeting)
@@ -414,25 +411,11 @@ async def media_stream(ws: WebSocket):
                         session["closing_response_started"] = False
                     await oai_ws.send(json.dumps({
                         "type": "response.create",
-                        "response": {
-                            "max_output_tokens": 60,
-                        },
                     }))
 
             elif etype == "error":
                 err = evt.get("error") or {}
                 log.error(f"[{call_sid}] [OAI_IN] error: {err}")
-                session = sessions.get(call_sid, {})
-                if (
-                    err.get("param") == "session.max_output_tokens"
-                    and not session.get("session_update_fallback_sent")
-                    and oai_ws
-                ):
-                    session["session_update_fallback_sent"] = True
-                    log.info(f"[{call_sid}] max_output_tokens rejected; resending session.update without it")
-                    await oai_ws.send(json.dumps(
-                        build_session_update(from_number, include_max_output_tokens=False)
-                    ))
 
     # -- Twilio reader (main loop) --------------------------------------------
 
@@ -458,7 +441,7 @@ async def media_stream(ws: WebSocket):
                 )
                 log.info(f"[{call_sid}] OpenAI connected")
 
-                session_update = build_session_update(from_number, include_max_output_tokens=True)
+                session_update = build_session_update(from_number)
                 raw_su = json.dumps(session_update)
                 log.info(f"[{call_sid}] SENDING session.update")
                 asyncio.create_task(oai_reader())
