@@ -247,15 +247,40 @@ async def media_stream(ws: WebSocket):
     oai_ws    : Optional[websockets.WebSocketClientProtocol] = None
     twilio_to_oai_state = None
     oai_to_twilio_state = None
+    audio_out_queue: asyncio.Queue[bytes] = asyncio.Queue()
+    audio_sender_task: Optional[asyncio.Task] = None
 
     # -- OpenAI reader (background task) -------------------------------------
 
+    async def drain_audio_queue():
+        while not audio_out_queue.empty():
+            try:
+                audio_out_queue.get_nowait()
+                audio_out_queue.task_done()
+            except asyncio.QueueEmpty:
+                break
+
     async def clear_twilio_audio():
+        await drain_audio_queue()
         if stream_sid:
             await ws.send_text(json.dumps({
                 "event":     "clear",
                 "streamSid": stream_sid,
             }))
+
+    async def twilio_audio_sender():
+        while True:
+            chunk = await audio_out_queue.get()
+            try:
+                if stream_sid:
+                    await ws.send_text(json.dumps({
+                        "event":     "media",
+                        "streamSid": stream_sid,
+                        "media":     {"payload": base64.b64encode(chunk).decode()},
+                    }))
+                    await asyncio.sleep(0.02)
+            finally:
+                audio_out_queue.task_done()
 
     async def oai_reader():
         nonlocal oai_to_twilio_state
@@ -276,11 +301,10 @@ async def media_stream(ws: WebSocket):
                         pcm24k, 2, 1, 24000, 8000, oai_to_twilio_state
                     )
                     mulaw = audioop.lin2ulaw(pcm8k, 2)
-                    await ws.send_text(json.dumps({
-                        "event":     "media",
-                        "streamSid": stream_sid,
-                        "media":     {"payload": base64.b64encode(mulaw).decode()},
-                    }))
+                    for i in range(0, len(mulaw), 160):
+                        chunk = mulaw[i:i + 160]
+                        if chunk:
+                            await audio_out_queue.put(chunk)
 
             # Function call — GA API delivers complete call in response.output_item.done
             elif etype == "session.updated":
@@ -373,6 +397,8 @@ async def media_stream(ws: WebSocket):
                 from_number = session.get("from_number", "unknown")
                 log.info(f"[{call_sid}] Stream started  sid={stream_sid}  from={from_number}")
 
+                audio_sender_task = asyncio.create_task(twilio_audio_sender())
+
                 log.info(f"[{call_sid}] Connecting to OpenAI: {OAI_URL}")
                 oai_ws = await websockets.connect(
                     OAI_URL,
@@ -422,4 +448,6 @@ async def media_stream(ws: WebSocket):
                 await oai_ws.close()
             except Exception:
                 pass
+        if audio_sender_task:
+            audio_sender_task.cancel()
         log.info(f"[{call_sid}] media_stream done")
