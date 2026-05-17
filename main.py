@@ -299,6 +299,12 @@ async def media_stream(ws: WebSocket):
                         "instructions": make_instructions(from_number),
                         "tools":       TOOLS,
                         "tool_choice": "auto",
+                        "turn_detection": {
+                            "type":                "server_vad",
+                            "threshold":           0.5,
+                            "prefix_padding_ms":   300,
+                            "silence_duration_ms": 500,
+                        },
                     },
                 }
                 raw_su = json.dumps(session_update)
