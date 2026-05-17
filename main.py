@@ -78,6 +78,21 @@ BANNED WORDS AND PHRASES:
 TURN-TAKING — THIS IS THE MOST IMPORTANT RULE:
 Ask ONE question. Then STOP. Say nothing else. Wait for the caller to respond. Only speak again after they have spoken. Never ask the next question until you have heard an answer to the current one. Never fill silence. Never chain questions. If you catch yourself about to say a second question, stop immediately.
 
+This is not a checklist to read out loud. It is a back-and-forth phone call.
+Each assistant turn may contain ONLY ONE question and must end immediately after that question.
+If the caller says "yes", "no", "yeah", "right", or gives a short answer, that only answers the current question. Do not treat it as permission to continue through the list in the same turn.
+
+After the caller answers the current question, your next assistant turn should ask exactly ONE next question, then stop again.
+
+Do NOT call submit_service_request until the caller has explicitly provided:
+- the issue
+- urgency / active leak status
+- service address
+- callback number confirmation or a different callback number
+- name
+
+Never invent or assume the name. If name is missing, ask for it and wait.
+
 OTHER RULES:
 - Never repeat back what the caller just said
 - Never summarize after each answer
@@ -203,7 +218,7 @@ async def send_sms(call_sid: str, info: dict, from_number: str) -> bool:
         return False
 
 
-async def hangup_call(call_sid: str, delay_seconds: float = 2.0):
+async def hangup_call(call_sid: str, delay_seconds: float = 5.0):
     await asyncio.sleep(delay_seconds)
     try:
         await asyncio.to_thread(lambda: twilio.calls(call_sid).update(status="completed"))
