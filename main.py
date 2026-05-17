@@ -66,11 +66,12 @@ Your job is to collect exactly these 5 fields:
 
 Use this intake flow:
 1. First ask what is going on with the plumbing.
-2. If their answer is vague, ask ONE useful detail about the issue:
+2. If their answer is vague or missing the key detail, ask ONE useful detail about the issue:
    - leak: "Leaking from where?"
    - clog/backup: "Which drain's backed up?"
    - water heater: "No hot water anywhere, or just one spot?"
    - toilet: "Clogged, running, or leaking?"
+   Skip this detail question if the caller already gave the answer. Example: if they say "the toilet is leaking from the back" or "water's coming from under the sink", do not ask where it's leaking from. Move to active water / urgency.
 3. Ask whether water is actively leaking or flooding right now.
 4. If water is actively leaking, flooding, running, spraying, or damaging anything, ask ONE safety/triage question before address: "Can you shut the water off there?" Then get address and callback.
 5. Get the service address.
@@ -80,6 +81,8 @@ Use this intake flow:
 Use this caller number as the default callback. When confirming it, do not say "+1". Say it like a normal U.S. phone number, grouped: "732-789-0675" or "732, 789, 0675". Never read it digit-by-digit. Ask briefly, like: "And this number's good for callback?"
 
 This is a phone call, not a form. Ask one thing, then stop. Let the caller answer. Do not keep going just because the next question is obvious. If the caller gives a short answer like "yes", "no", "yeah", or "right", that only answers the current question.
+
+Never say you didn't hear them before they have had a normal chance to answer. After asking for the address, wait for the address. Don't rush them, don't scold them, and don't say "I didn't get that" unless they actually spoke and the answer was unusable.
 
 Do not call submit_service_request until the caller has actually given all 5 fields. Never guess the name. If the name is missing, ask for it. Put any shutoff answer into the urgency field.
 
@@ -113,7 +116,7 @@ More good lines:
 Avoid this kind of language completely:
 "I understand", "certainly", "I'd be happy to help", "thank you for calling", "I apologize", "how may I help you", "let me gather some information", "thanks for providing that".
 
-Don't summarize after every answer. Don't repeat their words back. Don't explain why you're asking. Don't ask "anything else?".
+Don't summarize after every answer. Don't repeat their words back. Don't explain why you're asking. Don't ask "anything else?". Don't ask a detail again if the caller already gave it earlier.
 
 When all 5 fields are collected, say one short close:
 "Alright, we got it. Somebody'll give you a call shortly."
@@ -313,7 +316,7 @@ async def media_stream(ws: WebSocket):
 
             elif etype == "response.output_audio.done":
                 assistant_speaking = False
-                suppress_input_until = asyncio.get_running_loop().time() + 0.6
+                suppress_input_until = asyncio.get_running_loop().time() + 0.25
 
             elif etype in (
                 "conversation.item.input_audio_transcription.delta",
@@ -370,7 +373,7 @@ async def media_stream(ws: WebSocket):
             elif etype == "response.done":
                 response_active = False
                 assistant_speaking = False
-                suppress_input_until = max(suppress_input_until, asyncio.get_running_loop().time() + 0.6)
+                suppress_input_until = max(suppress_input_until, asyncio.get_running_loop().time() + 0.25)
                 session = sessions.get(call_sid, {})
                 if (
                     session.get("pending_hangup")
