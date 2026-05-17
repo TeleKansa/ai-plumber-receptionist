@@ -248,6 +248,13 @@ async def media_stream(ws: WebSocket):
 
     # -- OpenAI reader (background task) -------------------------------------
 
+    async def clear_twilio_audio():
+        if stream_sid:
+            await ws.send_text(json.dumps({
+                "event":     "clear",
+                "streamSid": stream_sid,
+            }))
+
     async def oai_reader():
         async for raw in oai_ws:
             evt   = json.loads(raw)
@@ -270,6 +277,29 @@ async def media_stream(ws: WebSocket):
                     }))
 
             # Function call — GA API delivers complete call in response.output_item.done
+            elif etype == "session.updated":
+                session = sessions.get(call_sid, {})
+                if not session.get("greeting_sent"):
+                    session["greeting_sent"] = True
+                    greeting = json.dumps({
+                        "type": "response.create",
+                        "response": {
+                            "instructions": 'Say only: "Plumbing office, what\'s going on?" Then stop.',
+                        },
+                    })
+                    await oai_ws.send(greeting)
+                    log.info(f"[{call_sid}] Session updated, greeting sent")
+
+            elif etype == "input_audio_buffer.speech_started":
+                session = sessions.get(call_sid, {})
+                if not session.get("complete"):
+                    log.info(f"[{call_sid}] Caller speech started; canceling current AI audio")
+                    try:
+                        await oai_ws.send(json.dumps({"type": "response.cancel"}))
+                    except Exception as exc:
+                        log.info(f"[{call_sid}] response.cancel ignored: {exc}")
+                    await clear_twilio_audio()
+
             elif etype == "response.created":
                 session = sessions.get(call_sid, {})
                 if session.get("pending_hangup") and not session.get("closing_response_started"):
@@ -355,18 +385,9 @@ async def media_stream(ws: WebSocket):
                 }
                 raw_su = json.dumps(session_update)
                 log.info(f"[{call_sid}] SENDING session.update")
-                await oai_ws.send(raw_su)
-
-                greeting = json.dumps({
-                    "type": "response.create",
-                    "response": {
-                        "instructions": 'Say only: "Plumbing office, what\'s going on?" Then stop.',
-                    },
-                })
-                await oai_ws.send(greeting)
-                log.info(f"[{call_sid}] Session configured, greeting sent")
-
                 asyncio.create_task(oai_reader())
+                await oai_ws.send(raw_su)
+                log.info(f"[{call_sid}] Session update sent")
 
             elif evt == "media":
                 if oai_ws and not oai_ws.closed:
