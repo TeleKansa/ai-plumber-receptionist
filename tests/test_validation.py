@@ -4,6 +4,7 @@ from workflow.validation import (
     looks_like_address,
     looks_like_name,
     looks_like_phone,
+    name_supported_by_caller_text,
     validate_service_request_args,
 )
 
@@ -29,18 +30,44 @@ class ValidationTests(unittest.TestCase):
         self.assertFalse(looks_like_phone(""))
 
     def test_looks_like_address_rejects_placeholders(self):
-        for value in ("", "home", "my house", "same place", "unknown"):
+        for value in (
+            "",
+            "home",
+            "my house",
+            "at my house",
+            "same place",
+            "the same place",
+            "unknown",
+            "caller's house",
+            "their house",
+            "the address on file",
+        ):
+            self.assertFalse(looks_like_address(value))
+
+    def test_looks_like_address_rejects_city_or_vague_location(self):
+        for value in ("Overland Park", "near Walmart", "Kansas City", "123", "123 Overland Park"):
             self.assertFalse(looks_like_address(value))
 
     def test_looks_like_address_accepts_non_placeholder_text(self):
         self.assertTrue(looks_like_address("6100 West 120th Street"))
+        self.assertTrue(looks_like_address("123 Main St"))
+        self.assertTrue(looks_like_address("7420 W 135th St, Overland Park"))
 
     def test_looks_like_name_rejects_placeholders(self):
         for value in ("", "unknown", "caller", "customer"):
             self.assertFalse(looks_like_name(value))
 
+    def test_name_support_requires_caller_text_when_available(self):
+        self.assertTrue(name_supported_by_caller_text("Sam Rivera", "My name is Sam Rivera"))
+        self.assertTrue(name_supported_by_caller_text("Sam", "This is Sam"))
+        self.assertFalse(name_supported_by_caller_text("Thomas", "The sink is leaking at 123 Main St"))
+
+    def test_single_name_without_caller_text_is_not_supported(self):
+        self.assertFalse(name_supported_by_caller_text("Thomas", ""))
+        self.assertTrue(name_supported_by_caller_text("Sam Rivera", ""))
+
     def test_validate_service_request_args_accepts_valid_payload(self):
-        self.assertEqual(validate_service_request_args(valid_args()), {})
+        self.assertEqual(validate_service_request_args(valid_args(), caller_text="My name is Sam Rivera"), {})
 
     def test_validate_service_request_args_reports_missing_and_placeholder_fields(self):
         args = valid_args()
@@ -54,9 +81,17 @@ class ValidationTests(unittest.TestCase):
             }
         )
 
-        errors = validate_service_request_args(args)
+        errors = validate_service_request_args(args, caller_text="The sink is leaking")
 
         self.assertEqual(set(errors), {"issue", "urgency", "address", "callback", "name"})
+
+    def test_validate_service_request_args_rejects_unsupported_name(self):
+        args = valid_args()
+        args["name"] = "Thomas"
+
+        errors = validate_service_request_args(args, caller_text="The sink is leaking at 6100 West 120th Street")
+
+        self.assertEqual(set(errors), {"name"})
 
 
 if __name__ == "__main__":

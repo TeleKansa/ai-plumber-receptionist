@@ -21,13 +21,20 @@ def _normalize_sms_result(result) -> SmsSendResult:
     return SmsSendResult(success=bool(result))
 
 
-async def process_service_request(call_sid: str, args: dict, from_number: str, plumber_phone_number: str, send_sms_func):
-    errors = validate_service_request_args(args)
+async def process_service_request(
+    call_sid: str,
+    args: dict,
+    from_number: str,
+    plumber_phone_number: str,
+    send_sms_func,
+    caller_text: str = "",
+):
+    errors = validate_service_request_args(args, caller_text=caller_text)
     if errors:
         repository.record_call_event(
             call_sid,
             "validation_failed",
-            {"errors": errors, "missing_fields": list(errors.keys()), "args": args},
+            {"errors": errors, "missing_fields": list(errors.keys()), "args": args, "caller_text": caller_text},
         )
         return ServiceRequestResult(
             output={
@@ -37,7 +44,11 @@ async def process_service_request(call_sid: str, args: dict, from_number: str, p
                 "errors": errors,
             },
             should_hangup=False,
-            closing_instructions="Ask only for the first missing or invalid field, then stop.",
+            closing_instructions=(
+                "The submitted service request is missing or has an invalid field. "
+                "Ask only for the first missing or invalid field, then stop. "
+                "Do not invent the customer name, address, or any other field."
+            ),
         )
 
     existing_lead = repository.get_lead_by_call_sid(call_sid)

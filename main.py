@@ -352,7 +352,17 @@ async def media_stream(ws: WebSocket):
             ):
                 transcript = evt.get("transcript") or caller_transcript
                 if transcript.strip():
-                    log.info(f"[{call_sid}] Caller said: {transcript.strip()}")
+                    clean_transcript = transcript.strip()
+                    log.info(f"[{call_sid}] Caller said: {clean_transcript}")
+                    if call_sid:
+                        session = sessions.setdefault(call_sid, {})
+                        caller_text_parts = session.setdefault("caller_text_parts", [])
+                        caller_text_parts.append(clean_transcript)
+                        repository.record_call_event(
+                            call_sid,
+                            "caller_transcript",
+                            {"transcript": clean_transcript},
+                        )
                 caller_transcript = ""
 
             # Function call — GA API delivers complete call in response.output_item.done
@@ -423,6 +433,7 @@ async def media_stream(ws: WebSocket):
                         session.get("from_number", "unknown"),
                         PLUMBER_PHONE_NUMBER,
                         send_sms,
+                        caller_text=" ".join(session.get("caller_text_parts", [])),
                     )
                     session["complete"] = result.should_hangup
 

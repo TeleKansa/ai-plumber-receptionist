@@ -30,6 +30,7 @@ Phase 1 is about adding stability guardrails around the existing AI plumber rece
 
 - Add safer config validation for missing production environment variables.
 - Add a retry worker for failed notifications.
+- Add stronger caller transcript provenance if OpenAI input transcription is unavailable or incomplete on real calls.
 - Add structured logging around lead completion and notification results.
 - Add a small manual test checklist for Twilio Media Streams and OpenAI Realtime.
 - Investigate a Python 3.13-safe replacement for `audioop`.
@@ -39,3 +40,8 @@ Phase 1 is about adding stability guardrails around the existing AI plumber rece
 - Should `HOST` and `OAI_URL` be fully environment-driven in production, with startup failure if missing?
 - Should failed SMS delivery trigger a retry worker or a separate alert channel?
 - What is the acceptable behavior when OpenAI calls `submit_service_request` with an incomplete or placeholder address?
+- Should backend validation require caller transcript support for every submitted name, including full names, after more real-call transcript samples are available?
+
+## Current Hotfix Note
+
+Name validation now uses caller transcript text when OpenAI provides it. If transcript text exists, the submitted name must be supported by what the caller said. If no transcript is available, single-token names are rejected as too easy to invent, while fuller names remain a best-effort fallback to avoid blocking every call on transcript availability.
