@@ -28,6 +28,9 @@ class AdminRoutesTests(unittest.TestCase):
                     oai_url="wss://example.test/realtime",
                     database_url=f"sqlite:///{self.tmpdir.name}/test.db",
                     admin_password="secret",
+                    default_tenant_name="Default Plumbing",
+                    default_tenant_slug="default",
+                    default_tenant_greeting="Plumbing office, what's going on?",
                 )
             )
         )
@@ -54,6 +57,17 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("validation_failed", response.text)
         self.assertIn("missing_fields", response.text)
         self.assertIn("my house", response.text)
+
+    def test_tenant_pages_render(self):
+        tenant = repository.get_default_tenant()
+
+        tenants_response = self.client.get("/admin/tenants", auth=("admin", "secret"))
+        detail_response = self.client.get(f"/admin/tenants/{tenant['id']}", auth=("admin", "secret"))
+
+        self.assertEqual(tenants_response.status_code, 200)
+        self.assertIn("Default Plumbing", tenants_response.text)
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertIn("Phone Numbers", detail_response.text)
 
 
 if __name__ == "__main__":

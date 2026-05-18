@@ -137,8 +137,17 @@ or
 Then immediately call submit_service_request. After that, do not continue the conversation. If they say thanks after the close, just say "yep" or "you bet" and stop.
 """
 
-def make_instructions(caller_number: str) -> str:
-    return SYSTEM_PROMPT.format(caller_number=caller_number)
+def make_instructions(caller_number: str, tenant: Optional[dict] = None) -> str:
+    instructions = SYSTEM_PROMPT.format(caller_number=caller_number)
+    if not tenant:
+        return instructions
+    business_name = tenant.get("business_name") or tenant.get("name") or "the plumbing office"
+    greeting = tenant.get("greeting") or "Plumbing office, what's going on?"
+    return (
+        f"Business name for this call: {business_name}\n"
+        f"Use this opening greeting when the call starts: \"{greeting}\"\n\n"
+        f"{instructions}"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -165,10 +174,10 @@ TOOLS = [
 ]
 
 
-def build_session_update(caller_number: str) -> dict:
+def build_session_update(caller_number: str, tenant: Optional[dict] = None) -> dict:
     session = {
         "type":        "realtime",
-        "instructions": make_instructions(caller_number),
+        "instructions": make_instructions(caller_number, tenant),
         "tools":       TOOLS,
         "tool_choice": "auto",
     }
@@ -216,14 +225,28 @@ async def voice(request: Request):
     to_number   = form.get("To",      "unknown")
     log.info(f"[{call_sid}] Incoming call from {from_number}")
 
-    repository.create_or_update_call(call_sid, from_number, to_number)
+    tenant, tenant_matched = repository.resolve_tenant_for_phone(to_number)
+    repository.create_or_update_call(call_sid, from_number, to_number, tenant_id=tenant["id"])
+    if not tenant_matched:
+        repository.record_call_event(
+            call_sid,
+            "tenant_lookup_failed",
+            {"to_number": to_number, "fallback_tenant_id": tenant["id"], "fallback_slug": tenant["slug"]},
+            tenant_id=tenant["id"],
+        )
     repository.record_call_event(
         call_sid,
         "voice_received",
-        {"from_number": from_number, "to_number": to_number},
+        {"from_number": from_number, "to_number": to_number, "tenant_id": tenant["id"]},
     )
 
-    sessions[call_sid] = {"from_number": from_number, "to_number": to_number, "complete": False}
+    sessions[call_sid] = {
+        "from_number": from_number,
+        "to_number": to_number,
+        "tenant_id": tenant["id"],
+        "tenant": tenant,
+        "complete": False,
+    }
 
     twiml = (
         "<Response>"
@@ -238,7 +261,7 @@ async def voice(request: Request):
 # SMS
 # ---------------------------------------------------------------------------
 
-async def send_sms(call_sid: str, info: dict, from_number: str) -> SmsSendResult:
+async def send_sms(call_sid: str, info: dict, from_number: str, to_number: str) -> SmsSendResult:
     body = (
         f"NEW PLUMBING LEAD\n\n"
         f"Name: {info.get('name',     'N/A')}\n"
@@ -247,13 +270,13 @@ async def send_sms(call_sid: str, info: dict, from_number: str) -> SmsSendResult
         f"Urgency: {info.get('urgency', 'N/A')}\n"
         f"Address: {info.get('address', 'N/A')}"
     )
-    log.info(f"[{call_sid}] Sending SMS to {PLUMBER_PHONE_NUMBER}:\n{body}")
+    log.info(f"[{call_sid}] Sending SMS to {to_number}:\n{body}")
     try:
         message = await asyncio.to_thread(
             lambda: twilio.messages.create(
                 body=body,
                 from_=TWILIO_PHONE_NUMBER,
-                to=PLUMBER_PHONE_NUMBER,
+                to=to_number,
             )
         )
         log.info(f"[{call_sid}] SMS sent")
@@ -372,10 +395,11 @@ async def media_stream(ws: WebSocket):
                 session = sessions.get(call_sid, {})
                 if not session.get("greeting_sent"):
                     session["greeting_sent"] = True
+                    greeting_text = session.get("greeting") or "Plumbing office, what's going on?"
                     greeting = json.dumps({
                         "type": "response.create",
                         "response": {
-                            "instructions": 'Say only: "Plumbing office, what\'s going on?" Then stop.',
+                            "instructions": f'Say only: "{greeting_text}" Then stop.',
                         },
                     })
                     await oai_ws.send(greeting)
@@ -428,14 +452,19 @@ async def media_stream(ws: WebSocket):
 
                     session = sessions.get(call_sid, {})
                     log.info(f"[{call_sid}] submit_service_request: {args}")
+                    notification_sms_number = session.get("notification_sms_number") or ""
+
+                    async def send_tenant_sms(send_call_sid: str, send_args: dict, send_from_number: str):
+                        return await send_sms(send_call_sid, send_args, send_from_number, notification_sms_number)
 
                     result = await process_service_request(
                         call_sid,
                         args,
                         session.get("from_number", "unknown"),
-                        PLUMBER_PHONE_NUMBER,
-                        send_sms,
+                        notification_sms_number,
+                        send_tenant_sms,
                         caller_text=" ".join(session.get("caller_text_parts", [])),
+                        tenant_id=session.get("tenant_id"),
                     )
                     session["complete"] = result.should_hangup
 
@@ -473,7 +502,14 @@ async def media_stream(ws: WebSocket):
             elif evt == "start":
                 call_sid    = data["start"]["callSid"]
                 stream_sid  = data["start"]["streamSid"]
-                session     = sessions.get(call_sid, {})
+                session     = sessions.setdefault(call_sid, {})
+                tenant      = session.get("tenant") or repository.get_call_tenant(call_sid) or repository.get_default_tenant()
+                session["tenant"] = tenant
+                session["tenant_id"] = tenant["id"]
+                session["greeting"] = tenant.get("greeting") or "Plumbing office, what's going on?"
+                session["notification_sms_number"] = tenant.get("notification_sms_number") or (
+                    PLUMBER_PHONE_NUMBER if tenant.get("slug") == "default" else ""
+                )
                 from_number = session.get("from_number", "unknown")
                 log.info(f"[{call_sid}] Stream started  sid={stream_sid}  from={from_number}")
                 repository.update_call_stream_started(call_sid, stream_sid)
@@ -486,7 +522,7 @@ async def media_stream(ws: WebSocket):
                 )
                 log.info(f"[{call_sid}] OpenAI connected")
 
-                session_update = build_session_update(from_number)
+                session_update = build_session_update(from_number, tenant)
                 raw_su = json.dumps(session_update)
                 log.info(f"[{call_sid}] SENDING session.update")
                 asyncio.create_task(oai_reader())

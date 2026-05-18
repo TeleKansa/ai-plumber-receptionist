@@ -16,7 +16,7 @@ Phase 1 is about adding stability guardrails around the existing AI plumber rece
 ## Current Non-Goals
 
 - No prompt or persona changes.
-- No multi-tenant architecture.
+- No full SaaS multi-tenant architecture beyond Milestone 2 lite routing/settings.
 - No manual deployment or merge; Railway may auto-deploy the configured dev branch after push.
 - No live phone test.
 - No large `main.py` refactor.
@@ -34,6 +34,7 @@ Phase 1 is about adding stability guardrails around the existing AI plumber rece
 - Add structured logging around lead completion and notification results.
 - Add a small manual test checklist for Twilio Media Streams and OpenAI Realtime.
 - Investigate a Python 3.13-safe replacement for `audioop`.
+- Add full SaaS user login, billing, CRM, and prompt versioning only after multi-tenant lite is validated.
 
 ## Manual Review Questions
 
@@ -45,3 +46,7 @@ Phase 1 is about adding stability guardrails around the existing AI plumber rece
 ## Current Hotfix Note
 
 Name validation now uses caller transcript text when OpenAI provides it. If transcript text exists, the submitted name must be supported by what the caller said. If no transcript is available, first-name-only submissions are accepted and a `name_provenance_unverified` event is recorded, so callers are not forced to provide a last name.
+
+## Milestone 2 Note
+
+Multi-tenant lite adds tenants, tenant phone numbers, tenant settings, tenant-scoped calls/leads/notifications/events, tenant-specific SMS recipients, and simple `/admin/tenants` management. Startup migration is additive: it creates new tenant tables, adds nullable `tenant_id` columns to existing Milestone 1 tables if needed, and backfills existing data to the default tenant.

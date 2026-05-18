@@ -2,7 +2,7 @@
 
 FastAPI demo for a small plumbing company receptionist. Twilio answers an incoming call, streams call audio over WebSocket, bridges the audio to OpenAI Realtime, collects plumbing lead details, and sends the current SMS notification to the plumber.
 
-This repository is currently focused on Milestone 1: a reliable single-tenant receptionist. The current phone flow, prompt behavior, OpenAI Realtime bridge, Twilio Media Streams route, and SMS template are intentionally kept stable while calls, leads, notifications, and call events are persisted.
+This repository is currently focused on Milestone 2: multi-tenant lite on top of the reliable receptionist baseline. The current phone flow, prompt behavior, OpenAI Realtime bridge, Twilio Media Streams route, and SMS template are intentionally kept stable while calls, leads, notifications, and call events are scoped by tenant.
 
 ## Requirements
 
@@ -33,6 +33,7 @@ Documented deployment values:
 
 - `HOST` or `PUBLIC_HOST`: public hostname Twilio can reach, without `https://`
 - `OAI_URL` or `OPENAI_REALTIME_URL`: OpenAI Realtime WebSocket URL
+- `DEFAULT_TENANT_NAME`, `DEFAULT_TENANT_SLUG`, `DEFAULT_TENANT_GREETING`: optional default tenant bootstrap values
 
 `HOST`/`PUBLIC_HOST` and `OAI_URL`/`OPENAI_REALTIME_URL` are read from the environment with the previous Railway host and OpenAI Realtime URL preserved as fallbacks.
 
@@ -74,10 +75,25 @@ Set `ADMIN_PASSWORD` to enable the internal admin pages:
 ```text
 https://<public-host>/admin
 https://<public-host>/admin/leads
+https://<public-host>/admin/tenants
 https://<public-host>/admin/calls/<call-sid>
 ```
 
 Use Basic Auth with username `admin` and the configured `ADMIN_PASSWORD`. If `ADMIN_PASSWORD` is missing, admin routes return disabled/unauthorized responses.
+
+## Multi-Tenant Lite
+
+At startup the app safely creates or updates a default tenant from environment variables:
+
+- Tenant name: `DEFAULT_TENANT_NAME` or `Default Plumbing`
+- Tenant slug: `DEFAULT_TENANT_SLUG` or `default`
+- Tenant phone number: `TWILIO_PHONE_NUMBER`
+- Tenant notification number: `PLUMBER_PHONE_NUMBER`
+- Tenant greeting: `DEFAULT_TENANT_GREETING` or the current greeting
+
+Existing Milestone 1 rows are not deleted. Startup migration adds nullable `tenant_id` columns where missing and backfills existing calls, leads, notifications, and call events to the default tenant.
+
+To add another plumbing company, open `/admin/tenants`, create the tenant, add its Twilio number, and set its notification SMS number. Incoming calls are routed by Twilio's `To` number.
 
 ## Twilio Webhook Setup
 
@@ -114,4 +130,8 @@ Twilio must be able to reach both the HTTPS webhook and the secure WebSocket end
 
 ## Milestone 1 Scope
 
-Milestone 1 keeps the app single-tenant and adds durability around the current demo: call records, validated leads, notification status, call events, and a minimal internal admin. It does not add multi-tenant behavior, a SaaS UI, prompt versioning, or a notification retry worker.
+Milestone 1 added durability around the current demo: call records, validated leads, notification status, call events, and a minimal internal admin.
+
+## Milestone 2 Scope
+
+Milestone 2 adds multi-tenant lite: tenants, tenant phone numbers, tenant settings, tenant-scoped calls/leads/notifications/events, tenant-specific SMS recipients, and simple admin tenant management. It does not add billing, customer login, full CRM, or prompt versioning.

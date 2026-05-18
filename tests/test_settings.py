@@ -17,6 +17,9 @@ ENV_NAMES = (
     "OPENAI_REALTIME_URL",
     "DATABASE_URL",
     "ADMIN_PASSWORD",
+    "DEFAULT_TENANT_NAME",
+    "DEFAULT_TENANT_SLUG",
+    "DEFAULT_TENANT_GREETING",
 )
 
 
@@ -30,6 +33,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.host, DEFAULT_HOST)
         self.assertEqual(settings.oai_url, DEFAULT_OAI_URL)
         self.assertEqual(settings.database_url, "sqlite:///./local_dev.db")
+        self.assertEqual(settings.default_tenant_name, "Default Plumbing")
+        self.assertEqual(settings.default_tenant_slug, "default")
 
     def test_settings_read_host_and_oai_url_from_env(self):
         with patch.dict(
@@ -72,6 +77,22 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.database_url, "postgresql://user:pass@example.test:5432/db")
         self.assertEqual(settings.admin_password, "secret")
+
+    def test_settings_read_default_tenant_values(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DEFAULT_TENANT_NAME": "Acme Plumbing",
+                "DEFAULT_TENANT_SLUG": "acme",
+                "DEFAULT_TENANT_GREETING": "Acme plumbing, what's going on?",
+            },
+            clear=True,
+        ):
+            settings = get_settings()
+
+        self.assertEqual(settings.default_tenant_name, "Acme Plumbing")
+        self.assertEqual(settings.default_tenant_slug, "acme")
+        self.assertEqual(settings.default_tenant_greeting, "Acme plumbing, what's going on?")
 
 
 if __name__ == "__main__":

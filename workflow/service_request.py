@@ -38,6 +38,7 @@ async def process_service_request(
     plumber_phone_number: str,
     send_sms_func,
     caller_text: str = "",
+    tenant_id: Optional[int] = None,
 ):
     errors = validate_service_request_args(args, caller_text=caller_text)
     if errors:
@@ -96,12 +97,31 @@ async def process_service_request(
             {"name": args.get("name"), "name_provenance": name_provenance},
         )
 
-    lead, notification = repository.create_lead_with_pending_notification(call_sid, args, plumber_phone_number)
+    lead, notification = repository.create_lead_with_pending_notification(call_sid, args, plumber_phone_number or "", tenant_id=tenant_id)
     repository.record_call_event(
         call_sid,
         "lead_created",
-        {"lead_id": lead["id"], "name_provenance": name_provenance},
+        {"lead_id": lead["id"], "tenant_id": lead.get("tenant_id"), "name_provenance": name_provenance},
     )
+
+    if not plumber_phone_number:
+        error = "Tenant notification SMS number is not configured"
+        repository.mark_notification_failed(notification["id"], error)
+        repository.record_call_event(
+            call_sid,
+            "notification_config_missing",
+            {"lead_id": lead["id"], "notification_id": notification["id"], "tenant_id": lead.get("tenant_id"), "error": error},
+        )
+        return ServiceRequestResult(
+            output={
+                "success": False,
+                "reason": "notification_failed",
+                "lead_saved": True,
+                "lead_id": lead["id"],
+            },
+            should_hangup=True,
+            closing_instructions='Say only: "I\'ve captured your information. We\'ll make sure it\'s flagged for follow-up." Then stop.',
+        )
 
     sms_result = _normalize_sms_result(await send_sms_func(call_sid, args, from_number))
     if sms_result.success:

@@ -4,6 +4,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
 
 from config.settings import get_settings
+from storage.migrations import run_schema_migrations
 from storage.models import Base
 
 
@@ -41,8 +42,10 @@ def configure_database(database_url: str):
     SessionLocal = sessionmaker(bind=engine, autoflush=False, autocommit=False, expire_on_commit=False, future=True)
 
 
-def init_db():
+def init_db(settings=None):
+    active_settings = settings or get_settings()
     Base.metadata.create_all(bind=engine)
+    run_schema_migrations(engine, active_settings)
 
 
 @contextmanager

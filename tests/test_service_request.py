@@ -95,9 +95,14 @@ class ServiceRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(sender.lead_exists_during_send)
         lead = repository.get_lead_by_call_sid("CALL_VALID")
         self.assertIsNotNone(lead)
+        self.assertIsNotNone(lead["tenant_id"])
         notification = repository.get_notification_for_lead(lead["id"])
+        self.assertEqual(notification["tenant_id"], lead["tenant_id"])
         self.assertEqual(notification["status"], "sent")
         self.assertEqual(notification["provider_message_sid"], "SM_TEST")
+        events = [event for event in repository.list_recent_call_events() if event["call_sid"] == "CALL_VALID"]
+        self.assertTrue(events)
+        self.assertTrue(all(event["tenant_id"] == lead["tenant_id"] for event in events))
 
     async def test_first_name_only_valid_submit_creates_lead_and_sends_sms(self):
         repository.create_or_update_call("CALL_FIRST_NAME", "+19135550123", "+19135550124")
@@ -277,6 +282,42 @@ class ServiceRequestTests(unittest.IsolatedAsyncioTestCase):
         leads = [lead for lead in repository.list_recent_leads() if lead["call_sid"] == "CALL_NAME_RETRY"]
         self.assertEqual(len(leads), 1)
         self.assertEqual(leads[0]["name"], "Sam")
+
+    async def test_tenant_specific_notification_number_is_used(self):
+        tenant_a = repository.create_tenant(
+            "Tenant A",
+            "tenant-a",
+            "Tenant A Plumbing",
+            "Tenant A plumbing, what's going on?",
+            "+15550000001",
+        )
+        tenant_b = repository.create_tenant(
+            "Tenant B",
+            "tenant-b",
+            "Tenant B Plumbing",
+            "Tenant B plumbing, what's going on?",
+            "+15550000002",
+        )
+        repository.create_or_update_call("CALL_TENANT_A", "+19135550123", "+15551110001", tenant_id=tenant_a["id"])
+        sender = FakeSmsSender(success=True)
+
+        result = await process_service_request(
+            "CALL_TENANT_A",
+            dict(FIRST_NAME_ARGS),
+            "+19135550123",
+            tenant_a["notification_sms_number"],
+            sender,
+            caller_text="My name is Sam. The address is 6100 West 120th Street.",
+            tenant_id=tenant_a["id"],
+        )
+
+        self.assertTrue(result.output["success"])
+        lead = repository.get_lead_by_call_sid("CALL_TENANT_A")
+        notification = repository.get_notification_for_lead(lead["id"])
+        self.assertEqual(lead["tenant_id"], tenant_a["id"])
+        self.assertEqual(notification["tenant_id"], tenant_a["id"])
+        self.assertEqual(notification["to_number"], "+15550000001")
+        self.assertNotEqual(notification["to_number"], tenant_b["notification_sms_number"])
 
 
 if __name__ == "__main__":
