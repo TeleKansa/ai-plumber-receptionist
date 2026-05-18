@@ -31,3 +31,7 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local database fallback
+local_dev.db
+local_dev.db-*

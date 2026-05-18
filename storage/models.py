@@ -1,0 +1,76 @@
+from datetime import datetime, timezone
+
+from sqlalchemy import Column, DateTime, ForeignKey, Integer, String, Text, UniqueConstraint
+from sqlalchemy.orm import declarative_base, relationship
+
+
+Base = declarative_base()
+
+
+def utcnow():
+    return datetime.now(timezone.utc)
+
+
+class Call(Base):
+    __tablename__ = "calls"
+
+    id = Column(Integer, primary_key=True)
+    call_sid = Column(String(128), unique=True, nullable=False, index=True)
+    stream_sid = Column(String(128), nullable=True, index=True)
+    from_number = Column(String(64), nullable=True)
+    to_number = Column(String(64), nullable=True)
+    status = Column(String(64), nullable=False, default="new")
+    started_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    ended_at = Column(DateTime(timezone=True), nullable=True)
+
+    leads = relationship("Lead", back_populates="call")
+    events = relationship("CallEvent", back_populates="call")
+
+
+class Lead(Base):
+    __tablename__ = "leads"
+
+    id = Column(Integer, primary_key=True)
+    call_id = Column(Integer, ForeignKey("calls.id"), nullable=True, index=True)
+    call_sid = Column(String(128), unique=True, nullable=False, index=True)
+    name = Column(String(255), nullable=False)
+    callback = Column(String(64), nullable=False)
+    address = Column(Text, nullable=False)
+    issue = Column(Text, nullable=False)
+    urgency = Column(Text, nullable=False)
+    raw_args_json = Column(Text, nullable=False)
+    status = Column(String(64), nullable=False, default="submitted")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    call = relationship("Call", back_populates="leads")
+    notifications = relationship("Notification", back_populates="lead")
+
+
+class Notification(Base):
+    __tablename__ = "notifications"
+    __table_args__ = (UniqueConstraint("lead_id", "channel", "to_number", name="uq_notification_lead_channel_to"),)
+
+    id = Column(Integer, primary_key=True)
+    lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False, index=True)
+    channel = Column(String(32), nullable=False)
+    to_number = Column(String(64), nullable=False)
+    status = Column(String(64), nullable=False, default="pending")
+    provider_message_sid = Column(String(128), nullable=True)
+    error = Column(Text, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    sent_at = Column(DateTime(timezone=True), nullable=True)
+
+    lead = relationship("Lead", back_populates="notifications")
+
+
+class CallEvent(Base):
+    __tablename__ = "call_events"
+
+    id = Column(Integer, primary_key=True)
+    call_id = Column(Integer, ForeignKey("calls.id"), nullable=True, index=True)
+    call_sid = Column(String(128), nullable=False, index=True)
+    event_type = Column(String(128), nullable=False, index=True)
+    payload_json = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+
+    call = relationship("Call", back_populates="events")

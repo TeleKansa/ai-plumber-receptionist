@@ -19,6 +19,10 @@ Use `.env.example` as the template for local environment variables. Keep real cr
 For a deployed environment, confirm:
 
 - The app runs with Python 3.12.
+- `DATABASE_URL` points to Postgres for durable lead storage.
+- `ADMIN_PASSWORD` is set before using `/admin`.
 - Twilio can reach `POST /voice`.
 - Twilio can establish `wss://<public-host>/media-stream`.
 - `/health` returns `{"status":"ok"}`.
+
+If `DATABASE_URL` is omitted, the app uses local SQLite at `./local_dev.db`. This is acceptable for local/dev checks only and should not be treated as reliable production storage on Railway.

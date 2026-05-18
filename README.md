@@ -2,7 +2,7 @@
 
 FastAPI demo for a small plumbing company receptionist. Twilio answers an incoming call, streams call audio over WebSocket, bridges the audio to OpenAI Realtime, collects plumbing lead details, and sends the current SMS notification to the plumber.
 
-This repository is currently in Phase 0: repo hygiene and stabilization baseline. The current phone flow, prompt behavior, OpenAI Realtime bridge, Twilio Media Streams route, and SMS behavior are intentionally left unchanged.
+This repository is currently focused on Milestone 1: a reliable single-tenant receptionist. The current phone flow, prompt behavior, OpenAI Realtime bridge, Twilio Media Streams route, and SMS template are intentionally kept stable while calls, leads, notifications, and call events are persisted.
 
 ## Requirements
 
@@ -26,13 +26,17 @@ Required values:
 - `TWILIO_AUTH_TOKEN`
 - `TWILIO_PHONE_NUMBER`
 - `PLUMBER_PHONE_NUMBER`
+- `DATABASE_URL` for Railway/Postgres durable lead storage
+- `ADMIN_PASSWORD` to enable internal admin pages
 
 Documented deployment values:
 
 - `HOST` or `PUBLIC_HOST`: public hostname Twilio can reach, without `https://`
 - `OAI_URL` or `OPENAI_REALTIME_URL`: OpenAI Realtime WebSocket URL
 
-Note: the current `main.py` uses the hard-coded `HOST` and `OAI_URL` constants. The env names above are documented for deployment hygiene and a future cleanup, without changing Phase 0 runtime behavior.
+`HOST`/`PUBLIC_HOST` and `OAI_URL`/`OPENAI_REALTIME_URL` are read from the environment with the previous Railway host and OpenAI Realtime URL preserved as fallbacks.
+
+If `DATABASE_URL` is not set, the app falls back to local SQLite at `./local_dev.db`. That fallback is only for local/dev use. Do not rely on Railway's filesystem for long-term production lead storage.
 
 ## Local Setup
 
@@ -63,6 +67,18 @@ Expected response:
 {"status":"ok"}
 ```
 
+## Internal Admin
+
+Set `ADMIN_PASSWORD` to enable the internal admin pages:
+
+```text
+https://<public-host>/admin
+https://<public-host>/admin/leads
+https://<public-host>/admin/calls/<call-sid>
+```
+
+Use Basic Auth with username `admin` and the configured `ADMIN_PASSWORD`. If `ADMIN_PASSWORD` is missing, admin routes return disabled/unauthorized responses.
+
 ## Twilio Webhook Setup
 
 In the Twilio Console, configure the phone number's Voice webhook:
@@ -82,6 +98,8 @@ Twilio must be able to reach both the HTTPS webhook and the secure WebSocket end
 
 - Use Python 3.12.
 - Set environment variables in Railway instead of committing secrets.
+- Add a Railway Postgres database and set `DATABASE_URL` for durable lead storage.
+- Set `ADMIN_PASSWORD` before using `/admin`.
 - Railway provides `$PORT`; both `Procfile` and `railway.json` start the app with `uvicorn main:app --host 0.0.0.0 --port $PORT`.
 - Configure the Twilio Voice webhook to the deployed `/voice` URL.
 - Confirm the deployed `/health` endpoint before making a phone call.
@@ -94,6 +112,6 @@ Twilio must be able to reach both the HTTPS webhook and the secure WebSocket end
 4. Call the Twilio number.
 5. Confirm the call connects, the AI receptionist speaks, and the plumber receives the existing SMS lead notification after the intake is complete.
 
-## Phase 0 Scope
+## Milestone 1 Scope
 
-Phase 0 is limited to making the current demo easier to install, reproduce, deploy, and verify. Business logic, prompt behavior, Twilio/OpenAI call flow, SMS behavior, storage, and multi-tenant architecture are not changed in this phase.
+Milestone 1 keeps the app single-tenant and adds durability around the current demo: call records, validated leads, notification status, call events, and a minimal internal admin. It does not add multi-tenant behavior, a SaaS UI, prompt versioning, or a notification retry worker.

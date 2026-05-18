@@ -6,12 +6,12 @@ from workflow.sms_result import build_service_request_output
 
 class SmsResultTests(unittest.TestCase):
     def test_service_request_output_reports_sms_success(self):
-        output = json.loads(build_service_request_output(True))
+        output = json.loads(build_service_request_output({"success": True}))
 
         self.assertEqual(output, {"success": True})
 
     def test_service_request_output_reports_sms_failure(self):
-        output = json.loads(build_service_request_output(False))
+        output = json.loads(build_service_request_output({"success": False}))
 
         self.assertEqual(output, {"success": False})
 

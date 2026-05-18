@@ -21,7 +21,12 @@ from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, PlainTextResponse
 from twilio.rest import Client as TwilioClient
 
+from admin.routes import create_admin_router
 from config.settings import get_settings
+from storage.database import init_db
+from storage import repository
+from workflow.notifications import SmsSendResult
+from workflow.service_request import process_service_request
 from workflow.sms_result import build_service_request_output
 
 load_dotenv()
@@ -48,6 +53,7 @@ OAI_URL              = settings.oai_url
 
 twilio = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app    = FastAPI()
+app.include_router(create_admin_router(settings))
 
 # call_sid → {from_number, complete}
 sessions: dict[str, dict] = {}
@@ -175,6 +181,7 @@ def build_session_update(caller_number: str) -> dict:
 
 @app.on_event("startup")
 async def on_startup():
+    init_db()
     log.info("=== Plumber Receptionist (OpenAI Realtime) starting ===")
     log.info(f"  OPENAI_API_KEY       : {'SET' if OPENAI_API_KEY       else 'MISSING'}")
     log.info(f"  TWILIO_ACCOUNT_SID   : {'SET' if TWILIO_ACCOUNT_SID   else 'MISSING'}")
@@ -183,6 +190,8 @@ async def on_startup():
     log.info(f"  PLUMBER_PHONE_NUMBER : {PLUMBER_PHONE_NUMBER or 'MISSING'}")
     log.info(f"  HOST                 : {HOST}")
     log.info(f"  OAI_URL              : {OAI_URL}")
+    log.info(f"  DATABASE_URL         : {'SET' if settings.database_url else 'MISSING'}")
+    log.info(f"  ADMIN_PASSWORD       : {'SET' if settings.admin_password else 'MISSING'}")
     log.info("======================================================")
 
 @app.get("/health")
@@ -202,9 +211,17 @@ async def voice(request: Request):
     form        = await request.form()
     call_sid    = form.get("CallSid", "unknown")
     from_number = form.get("From",    "unknown")
+    to_number   = form.get("To",      "unknown")
     log.info(f"[{call_sid}] Incoming call from {from_number}")
 
-    sessions[call_sid] = {"from_number": from_number, "complete": False}
+    repository.create_or_update_call(call_sid, from_number, to_number)
+    repository.record_call_event(
+        call_sid,
+        "voice_received",
+        {"from_number": from_number, "to_number": to_number},
+    )
+
+    sessions[call_sid] = {"from_number": from_number, "to_number": to_number, "complete": False}
 
     twiml = (
         "<Response>"
@@ -219,7 +236,7 @@ async def voice(request: Request):
 # SMS
 # ---------------------------------------------------------------------------
 
-async def send_sms(call_sid: str, info: dict, from_number: str) -> bool:
+async def send_sms(call_sid: str, info: dict, from_number: str) -> SmsSendResult:
     body = (
         f"NEW PLUMBING LEAD\n\n"
         f"Name: {info.get('name',     'N/A')}\n"
@@ -230,7 +247,7 @@ async def send_sms(call_sid: str, info: dict, from_number: str) -> bool:
     )
     log.info(f"[{call_sid}] Sending SMS to {PLUMBER_PHONE_NUMBER}:\n{body}")
     try:
-        await asyncio.to_thread(
+        message = await asyncio.to_thread(
             lambda: twilio.messages.create(
                 body=body,
                 from_=TWILIO_PHONE_NUMBER,
@@ -238,10 +255,10 @@ async def send_sms(call_sid: str, info: dict, from_number: str) -> bool:
             )
         )
         log.info(f"[{call_sid}] SMS sent")
-        return True
+        return SmsSendResult(success=True, provider_message_sid=getattr(message, "sid", None))
     except Exception as exc:
         log.exception(f"[{call_sid}] SMS failed: {exc}")
-        return False
+        return SmsSendResult(success=False, error=str(exc))
 
 
 async def hangup_call(call_sid: str, delay_seconds: float = 5.0):
@@ -398,10 +415,16 @@ async def media_stream(ws: WebSocket):
                         args = {}
 
                     session = sessions.get(call_sid, {})
-                    session["complete"] = True
                     log.info(f"[{call_sid}] submit_service_request: {args}")
 
-                    sms_sent = await send_sms(call_sid, args, session.get("from_number", "unknown"))
+                    result = await process_service_request(
+                        call_sid,
+                        args,
+                        session.get("from_number", "unknown"),
+                        PLUMBER_PHONE_NUMBER,
+                        send_sms,
+                    )
+                    session["complete"] = result.should_hangup
 
                     # Return result so AI delivers the closing line
                     await oai_ws.send(json.dumps({
@@ -409,15 +432,16 @@ async def media_stream(ws: WebSocket):
                         "item": {
                             "type":    "function_call_output",
                             "call_id": call_id,
-                            "output":  build_service_request_output(sms_sent),
+                            "output":  build_service_request_output(result.output),
                         },
                     }))
-                    if sms_sent:
+                    if result.should_hangup:
                         session["pending_hangup"] = True
                         session["closing_response_started"] = False
-                    await oai_ws.send(json.dumps({
-                        "type": "response.create",
-                    }))
+                    response_create = {"type": "response.create"}
+                    if result.closing_instructions:
+                        response_create["response"] = {"instructions": result.closing_instructions}
+                    await oai_ws.send(json.dumps(response_create))
 
             elif etype == "error":
                 err = evt.get("error") or {}
@@ -439,6 +463,8 @@ async def media_stream(ws: WebSocket):
                 session     = sessions.get(call_sid, {})
                 from_number = session.get("from_number", "unknown")
                 log.info(f"[{call_sid}] Stream started  sid={stream_sid}  from={from_number}")
+                repository.update_call_stream_started(call_sid, stream_sid)
+                repository.record_call_event(call_sid, "media_stream_started", data.get("start", {}))
 
                 log.info(f"[{call_sid}] Connecting to OpenAI: {OAI_URL}")
                 oai_ws = await websockets.connect(
@@ -472,6 +498,9 @@ async def media_stream(ws: WebSocket):
 
             elif evt == "stop":
                 log.info(f"[{call_sid}] Twilio stream stopped")
+                if call_sid:
+                    repository.record_call_event(call_sid, "media_stream_stopped", data.get("stop", {}))
+                    repository.mark_call_ended(call_sid, "stream_stopped")
                 break
 
     except WebSocketDisconnect:
@@ -484,4 +513,6 @@ async def media_stream(ws: WebSocket):
                 await oai_ws.close()
             except Exception:
                 pass
+        if call_sid:
+            repository.record_call_event(call_sid, "media_stream_done", {"stream_sid": stream_sid})
         log.info(f"[{call_sid}] media_stream done")

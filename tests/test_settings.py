@@ -15,6 +15,8 @@ ENV_NAMES = (
     "PUBLIC_HOST",
     "OAI_URL",
     "OPENAI_REALTIME_URL",
+    "DATABASE_URL",
+    "ADMIN_PASSWORD",
 )
 
 
@@ -27,6 +29,7 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.host, DEFAULT_HOST)
         self.assertEqual(settings.oai_url, DEFAULT_OAI_URL)
+        self.assertEqual(settings.database_url, "sqlite:///./local_dev.db")
 
     def test_settings_read_host_and_oai_url_from_env(self):
         with patch.dict(
@@ -55,6 +58,20 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.host, "public.example.test")
         self.assertEqual(settings.oai_url, "wss://public.example.test/realtime")
+
+    def test_settings_read_database_url_and_admin_password(self):
+        with patch.dict(
+            os.environ,
+            {
+                "DATABASE_URL": "postgresql://user:pass@example.test:5432/db",
+                "ADMIN_PASSWORD": "secret",
+            },
+            clear=True,
+        ):
+            settings = get_settings()
+
+        self.assertEqual(settings.database_url, "postgresql://user:pass@example.test:5432/db")
+        self.assertEqual(settings.admin_password, "secret")
 
 
 if __name__ == "__main__":
