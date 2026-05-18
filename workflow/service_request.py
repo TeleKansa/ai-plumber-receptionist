@@ -21,6 +21,16 @@ def _normalize_sms_result(result) -> SmsSendResult:
     return SmsSendResult(success=bool(result))
 
 
+def _validation_guidance(errors: dict[str, str]) -> str:
+    if "name" in errors:
+        return "Ask for the caller's name again. A first name is enough. Do not ask for last name."
+    return (
+        "The submitted service request is missing or has an invalid field. "
+        "Ask only for the first missing or invalid field, then stop. "
+        "Do not invent the customer name, address, or any other field."
+    )
+
+
 async def process_service_request(
     call_sid: str,
     args: dict,
@@ -31,10 +41,17 @@ async def process_service_request(
 ):
     errors = validate_service_request_args(args, caller_text=caller_text)
     if errors:
+        guidance = _validation_guidance(errors)
         repository.record_call_event(
             call_sid,
             "validation_failed",
-            {"errors": errors, "missing_fields": list(errors.keys()), "args": args, "caller_text": caller_text},
+            {
+                "errors": errors,
+                "missing_fields": list(errors.keys()),
+                "args": args,
+                "caller_text": caller_text,
+                "guidance": guidance,
+            },
         )
         return ServiceRequestResult(
             output={
@@ -42,13 +59,10 @@ async def process_service_request(
                 "reason": "validation_failed",
                 "missing_fields": list(errors.keys()),
                 "errors": errors,
+                "guidance": guidance,
             },
             should_hangup=False,
-            closing_instructions=(
-                "The submitted service request is missing or has an invalid field. "
-                "Ask only for the first missing or invalid field, then stop. "
-                "Do not invent the customer name, address, or any other field."
-            ),
+            closing_instructions=guidance,
         )
 
     existing_lead = repository.get_lead_by_call_sid(call_sid)
@@ -74,8 +88,20 @@ async def process_service_request(
             closing_instructions='Say only: "Okay, you\'re all set. We\'ll call you back soon." Then stop.',
         )
 
+    name_provenance = "supported_by_transcript" if caller_text.strip() else "unverified_no_transcript"
+    if name_provenance == "unverified_no_transcript":
+        repository.record_call_event(
+            call_sid,
+            "name_provenance_unverified",
+            {"name": args.get("name"), "name_provenance": name_provenance},
+        )
+
     lead, notification = repository.create_lead_with_pending_notification(call_sid, args, plumber_phone_number)
-    repository.record_call_event(call_sid, "lead_created", {"lead_id": lead["id"]})
+    repository.record_call_event(
+        call_sid,
+        "lead_created",
+        {"lead_id": lead["id"], "name_provenance": name_provenance},
+    )
 
     sms_result = _normalize_sms_result(await send_sms_func(call_sid, args, from_number))
     if sms_result.success:

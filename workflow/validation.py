@@ -113,7 +113,7 @@ def name_supported_by_caller_text(name: object, caller_text: object) -> bool:
         return False
     name_tokens = [token for token in normalized_name.split() if len(token) > 1]
     if not normalized_caller_text:
-        return len(name_tokens) >= 2
+        return bool(name_tokens)
     if not name_tokens:
         return False
     return all(re.search(rf"\b{re.escape(token)}\b", normalized_caller_text) for token in name_tokens)

@@ -62,12 +62,24 @@ class ValidationTests(unittest.TestCase):
         self.assertTrue(name_supported_by_caller_text("Sam", "This is Sam"))
         self.assertFalse(name_supported_by_caller_text("Thomas", "The sink is leaking at 123 Main St"))
 
-    def test_single_name_without_caller_text_is_not_supported(self):
-        self.assertFalse(name_supported_by_caller_text("Thomas", ""))
+    def test_single_name_without_caller_text_is_supported(self):
+        self.assertTrue(name_supported_by_caller_text("Sam", ""))
         self.assertTrue(name_supported_by_caller_text("Sam Rivera", ""))
 
     def test_validate_service_request_args_accepts_valid_payload(self):
         self.assertEqual(validate_service_request_args(valid_args(), caller_text="My name is Sam Rivera"), {})
+
+    def test_validate_service_request_args_accepts_first_name_only(self):
+        args = valid_args()
+        args["name"] = "Sam"
+
+        self.assertEqual(validate_service_request_args(args, caller_text="My name is Sam"), {})
+
+    def test_validate_service_request_args_accepts_first_name_without_transcript(self):
+        args = valid_args()
+        args["name"] = "Sam"
+
+        self.assertEqual(validate_service_request_args(args, caller_text=""), {})
 
     def test_validate_service_request_args_reports_missing_and_placeholder_fields(self):
         args = valid_args()

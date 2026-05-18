@@ -44,4 +44,4 @@ Phase 1 is about adding stability guardrails around the existing AI plumber rece
 
 ## Current Hotfix Note
 
-Name validation now uses caller transcript text when OpenAI provides it. If transcript text exists, the submitted name must be supported by what the caller said. If no transcript is available, single-token names are rejected as too easy to invent, while fuller names remain a best-effort fallback to avoid blocking every call on transcript availability.
+Name validation now uses caller transcript text when OpenAI provides it. If transcript text exists, the submitted name must be supported by what the caller said. If no transcript is available, first-name-only submissions are accepted and a `name_provenance_unverified` event is recorded, so callers are not forced to provide a last name.

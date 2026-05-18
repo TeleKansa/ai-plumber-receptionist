@@ -15,6 +15,14 @@ VALID_ARGS = {
     "name": "Sam Rivera",
 }
 
+FIRST_NAME_ARGS = {
+    "issue": "Kitchen sink is leaking",
+    "urgency": "Actively leaking, caller can shut off water",
+    "address": "6100 West 120th Street",
+    "callback": "732-789-0675",
+    "name": "Sam",
+}
+
 VALID_CALLER_TEXT = (
     "Kitchen sink is leaking. Water is still coming out. "
     "The address is 6100 West 120th Street. My name is Sam Rivera."
@@ -90,6 +98,50 @@ class ServiceRequestTests(unittest.IsolatedAsyncioTestCase):
         notification = repository.get_notification_for_lead(lead["id"])
         self.assertEqual(notification["status"], "sent")
         self.assertEqual(notification["provider_message_sid"], "SM_TEST")
+
+    async def test_first_name_only_valid_submit_creates_lead_and_sends_sms(self):
+        repository.create_or_update_call("CALL_FIRST_NAME", "+19135550123", "+19135550124")
+        sender = FakeSmsSender(success=True)
+
+        result = await process_service_request(
+            "CALL_FIRST_NAME",
+            dict(FIRST_NAME_ARGS),
+            "+19135550123",
+            "+19135559999",
+            sender,
+            caller_text="My name is Sam. The address is 6100 West 120th Street.",
+        )
+
+        self.assertTrue(result.output["success"])
+        self.assertEqual(len(sender.calls), 1)
+        lead = repository.get_lead_by_call_sid("CALL_FIRST_NAME")
+        self.assertEqual(lead["name"], "Sam")
+        events = [event for event in repository.list_recent_call_events() if event["call_sid"] == "CALL_FIRST_NAME"]
+        self.assertNotIn("validation_failed", {event["event_type"] for event in events})
+
+    async def test_first_name_only_without_transcript_is_accepted_and_marked_unverified(self):
+        repository.create_or_update_call("CALL_FIRST_NAME_NO_TRANSCRIPT", "+19135550123", "+19135550124")
+        sender = FakeSmsSender(success=True)
+
+        result = await process_service_request(
+            "CALL_FIRST_NAME_NO_TRANSCRIPT",
+            dict(FIRST_NAME_ARGS),
+            "+19135550123",
+            "+19135559999",
+            sender,
+            caller_text="",
+        )
+
+        self.assertTrue(result.output["success"])
+        self.assertEqual(len(sender.calls), 1)
+        lead = repository.get_lead_by_call_sid("CALL_FIRST_NAME_NO_TRANSCRIPT")
+        self.assertEqual(lead["name"], "Sam")
+        events = [
+            event
+            for event in repository.list_recent_call_events()
+            if event["call_sid"] == "CALL_FIRST_NAME_NO_TRANSCRIPT"
+        ]
+        self.assertIn("name_provenance_unverified", {event["event_type"] for event in events})
 
     async def test_sms_failure_still_saves_lead_and_failed_notification(self):
         repository.create_or_update_call("CALL_SMS_FAIL", "+19135550123", "+19135550124")
@@ -188,9 +240,43 @@ class ServiceRequestTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(result.output["success"])
         self.assertEqual(result.output["reason"], "validation_failed")
         self.assertIn("name", result.output["missing_fields"])
+        self.assertIn("A first name is enough", result.output["guidance"])
+        self.assertIn("Do not ask for last name", result.output["guidance"])
         self.assertFalse(result.should_hangup)
         self.assertEqual(sender.calls, [])
         self.assertIsNone(repository.get_lead_by_call_sid("CALL_BAD_NAME"))
+
+    async def test_unsupported_name_followed_by_supported_first_name_sends_one_sms_total(self):
+        repository.create_or_update_call("CALL_NAME_RETRY", "+19135550123", "+19135550124")
+        sender = FakeSmsSender(success=True)
+        invalid_args = dict(FIRST_NAME_ARGS)
+        invalid_args["name"] = "Thomas"
+
+        invalid = await process_service_request(
+            "CALL_NAME_RETRY",
+            invalid_args,
+            "+19135550123",
+            "+19135559999",
+            sender,
+            caller_text="The sink is leaking at 6100 West 120th Street.",
+        )
+        valid = await process_service_request(
+            "CALL_NAME_RETRY",
+            dict(FIRST_NAME_ARGS),
+            "+19135550123",
+            "+19135559999",
+            sender,
+            caller_text="The sink is leaking at 6100 West 120th Street. My name is Sam.",
+        )
+
+        self.assertFalse(invalid.output["success"])
+        self.assertEqual(invalid.output["reason"], "validation_failed")
+        self.assertIn("name", invalid.output["missing_fields"])
+        self.assertTrue(valid.output["success"])
+        self.assertEqual(len(sender.calls), 1)
+        leads = [lead for lead in repository.list_recent_leads() if lead["call_sid"] == "CALL_NAME_RETRY"]
+        self.assertEqual(len(leads), 1)
+        self.assertEqual(leads[0]["name"], "Sam")
 
 
 if __name__ == "__main__":
