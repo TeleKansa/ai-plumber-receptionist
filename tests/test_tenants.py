@@ -41,10 +41,14 @@ class TenantTests(unittest.TestCase):
 
         tenant = repository.get_default_tenant()
         phones = repository.list_tenant_phone_numbers(tenant["id"])
+        active_prompt = repository.get_active_prompt_profile(tenant["id"])
 
         self.assertEqual(tenant["name"], "Default Plumbing")
         self.assertEqual(tenant["notification_sms_number"], "+15557654321")
         self.assertEqual(phones[0]["twilio_number"], "+15551234567")
+        self.assertIsNotNone(active_prompt)
+        self.assertEqual(active_prompt["version"], 1)
+        self.assertTrue(active_prompt["is_active"])
 
     def test_phone_number_normalization_matches_common_formats(self):
         expected = "19135551234"
@@ -96,7 +100,10 @@ class TenantTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("<Stream", response.text)
         detail = repository.get_call_detail("CALL_ROUTE_DEFAULT")
+        active_prompt = repository.get_active_prompt_profile(default_tenant["id"])
         self.assertEqual(detail["call"]["tenant_id"], default_tenant["id"])
+        self.assertEqual(detail["call"]["prompt_version_id"], active_prompt["id"])
+        self.assertEqual(detail["prompt_profile"]["id"], active_prompt["id"])
         event_types = {event["event_type"] for event in detail["events"]}
         self.assertNotIn("tenant_lookup_failed", event_types)
 
@@ -120,7 +127,9 @@ class TenantTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("<Stream", response.text)
         detail = repository.get_call_detail("CALL_ROUTE_A")
+        active_prompt = repository.get_active_prompt_profile(tenant["id"])
         self.assertEqual(detail["call"]["tenant_id"], tenant["id"])
+        self.assertEqual(detail["call"]["prompt_version_id"], active_prompt["id"])
         event_types = {event["event_type"] for event in detail["events"]}
         self.assertNotIn("tenant_lookup_failed", event_types)
 

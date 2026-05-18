@@ -9,6 +9,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from admin.auth import check_admin_credentials
 from config.settings import Settings
 from storage import repository
+from workflow.prompt_builder import PromptBuilder
 
 
 security = HTTPBasic(auto_error=False)
@@ -56,10 +57,58 @@ def _input(name: str, value: str = "", placeholder: str = "") -> str:
     )
 
 
-def _textarea(name: str, value: str = "") -> str:
+def _textarea(name: str, value: str = "", rows: int = 2) -> str:
     return (
         f'<label>{escape(name)}<br>'
-        f'<textarea name="{escape(name)}" rows="2" style="width: 520px; max-width: 100%;">{escape(value or "")}</textarea></label>'
+        f'<textarea name="{escape(name)}" rows="{rows}" style="width: 720px; max-width: 100%;">{escape(value or "")}</textarea></label>'
+    )
+
+
+def _lines_from_json(value: str) -> str:
+    if not value:
+        return ""
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return value
+    if isinstance(parsed, list):
+        return "\n".join(str(item) for item in parsed)
+    return value
+
+
+def _lines_to_list(value: str) -> list[str]:
+    return [line.strip() for line in value.replace("\r", "\n").split("\n") if line.strip()]
+
+
+def _prompt_history_table(tenant_id: int, profiles: list[dict]) -> str:
+    if not profiles:
+        return "<p>No prompt versions yet.</p>"
+    rows = []
+    for profile in profiles:
+        activate = "active"
+        if not profile.get("is_active"):
+            activate = (
+                f'<form method="post" action="/admin/tenants/{tenant_id}/prompt/{profile["id"]}/activate">'
+                '<button type="submit">Activate</button>'
+                "</form>"
+            )
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(profile.get('id') or ''))}</td>"
+            f"<td>{escape(str(profile.get('version') or ''))}</td>"
+            f"<td>{escape(profile.get('label') or '')}</td>"
+            f"<td>{escape(profile.get('business_name') or '')}</td>"
+            f"<td>{escape(profile.get('greeting') or '')}</td>"
+            f"<td>{escape('yes' if profile.get('is_active') else 'no')}</td>"
+            f"<td>{activate}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr>"
+        "<th>id</th><th>version</th><th>label</th><th>business_name</th><th>greeting</th><th>active</th><th>action</th>"
+        "</tr></thead><tbody>"
+        f"{''.join(rows)}"
+        "</tbody></table>"
     )
 
 
@@ -106,7 +155,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
         body = "\n".join(
             [
                 "<h2>Recent Calls</h2>",
-                _render_table(calls, ["tenant_id", "call_sid", "from_number", "to_number", "stream_sid", "status", "started_at", "ended_at"]),
+                _render_table(calls, ["tenant_id", "prompt_version_id", "call_sid", "from_number", "to_number", "stream_sid", "status", "started_at", "ended_at"]),
                 "<h2>Recent Leads</h2>",
                 _render_table(leads, ["id", "tenant_id", "call_sid", "name", "callback", "address", "issue", "urgency", "status", "created_at"]),
                 "<h2>Recent Notifications</h2>",
@@ -187,6 +236,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
         body = "\n".join(
             [
                 f"<h2>{escape(tenant['name'])}</h2>",
+                f'<p><a href="/admin/tenants/{tenant_id}/prompt">Prompt/persona settings</a></p>',
                 "<h3>Settings</h3>",
                 f'<form method="post" action="/admin/tenants/{tenant_id}/settings">',
                 _input("business_name", tenant.get("business_name") or tenant.get("name") or ""),
@@ -211,7 +261,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<button type=\"submit\">Add Phone Number</button>",
                 "</form>",
                 "<h3>Recent Calls</h3>",
-                _render_table(calls, ["call_sid", "from_number", "to_number", "status", "started_at", "ended_at"]),
+                _render_table(calls, ["call_sid", "prompt_version_id", "from_number", "to_number", "status", "started_at", "ended_at"]),
                 "<h3>Recent Leads</h3>",
                 _render_table(leads, ["id", "call_sid", "name", "callback", "address", "issue", "urgency", "status", "created_at"]),
                 "<h3>Recent Notifications</h3>",
@@ -221,6 +271,78 @@ def create_admin_router(settings: Settings) -> APIRouter:
             ]
         )
         return _page(f"Tenant {tenant_id}", body)
+
+    @router.get("/admin/tenants/{tenant_id}/prompt", response_class=HTMLResponse)
+    async def admin_tenant_prompt(tenant_id: int):
+        tenant = repository.get_tenant(tenant_id)
+        if not tenant:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        active_profile = repository.get_active_prompt_profile(tenant_id)
+        profiles = repository.list_prompt_profiles(tenant_id)
+        preview = PromptBuilder().build("913-555-0123", tenant=tenant, profile=active_profile) if active_profile else ""
+        body = "\n".join(
+            [
+                f"<h2>{escape(tenant['name'])} Prompt</h2>",
+                "<h3>Core workflow is locked</h3>",
+                "<p>Style/persona settings can change wording, but required fields cannot be changed here. Required fields stay: issue, urgency, address, callback, name. First name is enough; last name is not required.</p>",
+                "<h3>Active Prompt Version</h3>",
+                _render_table([active_profile] if active_profile else [], ["id", "version", "label", "business_name", "greeting", "tone", "verbosity", "closing_line", "is_active"]),
+                "<h3>Create New Prompt Version</h3>",
+                f'<form method="post" action="/admin/tenants/{tenant_id}/prompt">',
+                _input("label", active_profile.get("label") if active_profile else "Updated prompt"),
+                "<br><br>",
+                _input("business_name", active_profile.get("business_name") if active_profile else tenant.get("business_name") or tenant.get("name") or ""),
+                "<br><br>",
+                _textarea("greeting", active_profile.get("greeting") if active_profile else tenant.get("greeting") or "", rows=2),
+                "<br><br>",
+                _textarea("tone", active_profile.get("tone") if active_profile else "", rows=2),
+                "<br><br>",
+                _textarea("verbosity", active_profile.get("verbosity") if active_profile else "", rows=2),
+                "<br><br>",
+                _textarea("closing_line", active_profile.get("closing_line") if active_profile else "", rows=2),
+                "<br><br>",
+                _textarea("avoid_phrases", _lines_from_json(active_profile.get("avoid_phrases_json") if active_profile else ""), rows=5),
+                "<br><br>",
+                _textarea("preferred_terms", _lines_from_json(active_profile.get("preferred_terms_json") if active_profile else ""), rows=5),
+                "<br><br>",
+                _textarea("extra_instructions_text", active_profile.get("extra_instructions_text") if active_profile else "", rows=6),
+                "<br><br>",
+                "<button type=\"submit\">Create and Activate New Version</button>",
+                "</form>",
+                "<h3>Prompt Version History</h3>",
+                _prompt_history_table(tenant_id, profiles),
+                "<h3>Generated Prompt Preview</h3>",
+                f"<pre>{escape(preview)}</pre>",
+            ]
+        )
+        return _page(f"Tenant {tenant_id} Prompt", body)
+
+    @router.post("/admin/tenants/{tenant_id}/prompt")
+    async def admin_create_prompt_version(tenant_id: int, request: Request):
+        form = await request.form()
+        profile = repository.create_prompt_profile(
+            tenant_id=tenant_id,
+            label=str(form.get("label", "")).strip(),
+            business_name=str(form.get("business_name", "")).strip(),
+            greeting=str(form.get("greeting", "")).strip(),
+            tone=str(form.get("tone", "")).strip(),
+            verbosity=str(form.get("verbosity", "")).strip(),
+            closing_line=str(form.get("closing_line", "")).strip(),
+            avoid_phrases=_lines_to_list(str(form.get("avoid_phrases", ""))),
+            preferred_terms=_lines_to_list(str(form.get("preferred_terms", ""))),
+            extra_instructions_text=str(form.get("extra_instructions_text", "")).strip(),
+            activate=True,
+        )
+        if not profile:
+            raise HTTPException(status_code=404, detail="Tenant not found")
+        return RedirectResponse(f"/admin/tenants/{tenant_id}/prompt", status_code=303)
+
+    @router.post("/admin/tenants/{tenant_id}/prompt/{profile_id}/activate")
+    async def admin_activate_prompt_version(tenant_id: int, profile_id: int):
+        profile = repository.activate_prompt_profile(tenant_id, profile_id)
+        if not profile:
+            raise HTTPException(status_code=404, detail="Prompt version not found")
+        return RedirectResponse(f"/admin/tenants/{tenant_id}/prompt", status_code=303)
 
     @router.post("/admin/tenants/{tenant_id}/settings")
     async def admin_update_tenant_settings(tenant_id: int, request: Request):

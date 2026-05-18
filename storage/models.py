@@ -16,6 +16,7 @@ class Call(Base):
 
     id = Column(Integer, primary_key=True)
     tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    prompt_version_id = Column(Integer, ForeignKey("tenant_ai_profiles.id"), nullable=True, index=True)
     call_sid = Column(String(128), unique=True, nullable=False, index=True)
     stream_sid = Column(String(128), nullable=True, index=True)
     from_number = Column(String(64), nullable=True)
@@ -25,6 +26,7 @@ class Call(Base):
     ended_at = Column(DateTime(timezone=True), nullable=True)
 
     tenant = relationship("Tenant", back_populates="calls")
+    prompt_profile = relationship("TenantAIProfile")
     leads = relationship("Lead", back_populates="call")
     events = relationship("CallEvent", back_populates="call")
 
@@ -96,6 +98,7 @@ class Tenant(Base):
 
     phone_numbers = relationship("TenantPhoneNumber", back_populates="tenant")
     settings = relationship("TenantSettings", back_populates="tenant", uselist=False)
+    ai_profiles = relationship("TenantAIProfile", back_populates="tenant")
     calls = relationship("Call", back_populates="tenant")
     leads = relationship("Lead", back_populates="tenant")
     notifications = relationship("Notification", back_populates="tenant")
@@ -129,3 +132,25 @@ class TenantSettings(Base):
     active = Column(Boolean, nullable=False, default=True)
 
     tenant = relationship("Tenant", back_populates="settings")
+
+
+class TenantAIProfile(Base):
+    __tablename__ = "tenant_ai_profiles"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=False, index=True)
+    version = Column(Integer, nullable=False)
+    label = Column(String(255), nullable=False)
+    business_name = Column(String(255), nullable=False)
+    greeting = Column(Text, nullable=False)
+    tone = Column(Text, nullable=False)
+    verbosity = Column(Text, nullable=False)
+    closing_line = Column(Text, nullable=False)
+    avoid_phrases_json = Column(Text, nullable=False)
+    preferred_terms_json = Column(Text, nullable=False)
+    extra_instructions_text = Column(Text, nullable=False, default="")
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    tenant = relationship("Tenant", back_populates="ai_profiles")

@@ -68,6 +68,46 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("Default Plumbing", tenants_response.text)
         self.assertEqual(detail_response.status_code, 200)
         self.assertIn("Phone Numbers", detail_response.text)
+        self.assertIn("Prompt/persona settings", detail_response.text)
+
+    def test_prompt_page_renders_preview_and_can_activate_previous_version(self):
+        tenant = repository.get_default_tenant()
+        original = repository.get_active_prompt_profile(tenant["id"])
+
+        prompt_response = self.client.get(f"/admin/tenants/{tenant['id']}/prompt", auth=("admin", "secret"))
+        self.assertEqual(prompt_response.status_code, 200)
+        self.assertIn("Core workflow is locked", prompt_response.text)
+        self.assertIn("Generated Prompt Preview", prompt_response.text)
+        self.assertIn("First name is enough", prompt_response.text)
+
+        create_response = self.client.post(
+            f"/admin/tenants/{tenant['id']}/prompt",
+            data={
+                "label": "Custom greeting",
+                "business_name": "Admin Test Plumbing",
+                "greeting": "Admin Test Plumbing, what's going on?",
+                "tone": "plainspoken",
+                "verbosity": "brief",
+                "closing_line": "You're all set. We'll call back soon.",
+                "avoid_phrases": "certainly\nI apologize",
+                "preferred_terms": "service address\ncallback number",
+                "extra_instructions_text": "Mention weekend availability if the caller asks.",
+            },
+            auth=("admin", "secret"),
+            follow_redirects=False,
+        )
+        self.assertEqual(create_response.status_code, 303)
+        active = repository.get_active_prompt_profile(tenant["id"])
+        self.assertNotEqual(active["id"], original["id"])
+        self.assertEqual(active["business_name"], "Admin Test Plumbing")
+
+        activate_response = self.client.post(
+            f"/admin/tenants/{tenant['id']}/prompt/{original['id']}/activate",
+            auth=("admin", "secret"),
+            follow_redirects=False,
+        )
+        self.assertEqual(activate_response.status_code, 303)
+        self.assertEqual(repository.get_active_prompt_profile(tenant["id"])["id"], original["id"])
 
 
 if __name__ == "__main__":

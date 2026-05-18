@@ -4,7 +4,18 @@ from typing import Optional
 from sqlalchemy import desc
 
 from storage.database import session_scope
-from storage.models import Call, CallEvent, Lead, Notification, Tenant, TenantPhoneNumber, TenantSettings, utcnow
+from storage.models import (
+    Call,
+    CallEvent,
+    Lead,
+    Notification,
+    Tenant,
+    TenantAIProfile,
+    TenantPhoneNumber,
+    TenantSettings,
+    utcnow,
+)
+from workflow.prompt_builder import prompt_profile_defaults
 
 
 def normalize_phone_number(value: Optional[str]) -> str:
@@ -48,10 +59,31 @@ def _tenant_phone_summary(phone: TenantPhoneNumber) -> dict:
     }
 
 
+def _prompt_profile_summary(profile: TenantAIProfile) -> dict:
+    return {
+        "id": profile.id,
+        "tenant_id": profile.tenant_id,
+        "version": profile.version,
+        "label": profile.label,
+        "business_name": profile.business_name,
+        "greeting": profile.greeting,
+        "tone": profile.tone,
+        "verbosity": profile.verbosity,
+        "closing_line": profile.closing_line,
+        "avoid_phrases_json": profile.avoid_phrases_json,
+        "preferred_terms_json": profile.preferred_terms_json,
+        "extra_instructions_text": profile.extra_instructions_text,
+        "is_active": profile.is_active,
+        "created_at": profile.created_at,
+        "updated_at": profile.updated_at,
+    }
+
+
 def _call_summary(call: Call) -> dict:
     return {
         "id": call.id,
         "tenant_id": call.tenant_id,
+        "prompt_version_id": call.prompt_version_id,
         "call_sid": call.call_sid,
         "stream_sid": call.stream_sid,
         "from_number": call.from_number,
@@ -130,6 +162,144 @@ def get_tenant(tenant_id: int) -> Optional[dict]:
         return _tenant_summary(tenant) if tenant else None
 
 
+def _create_default_prompt_profile(db, tenant: Tenant, activate: bool = True) -> TenantAIProfile:
+    tenant_summary = _tenant_summary(tenant)
+    defaults = prompt_profile_defaults(tenant_summary)
+    max_version = (
+        db.query(TenantAIProfile.version)
+        .filter(TenantAIProfile.tenant_id == tenant.id)
+        .order_by(desc(TenantAIProfile.version))
+        .first()
+    )
+    next_version = (max_version[0] if max_version else 0) + 1
+    if activate:
+        db.query(TenantAIProfile).filter(TenantAIProfile.tenant_id == tenant.id).update({"is_active": False})
+    profile = TenantAIProfile(
+        tenant_id=tenant.id,
+        version=next_version,
+        label=defaults["label"],
+        business_name=defaults["business_name"],
+        greeting=defaults["greeting"],
+        tone=defaults["tone"],
+        verbosity=defaults["verbosity"],
+        closing_line=defaults["closing_line"],
+        avoid_phrases_json=json.dumps(defaults["avoid_phrases"]),
+        preferred_terms_json=json.dumps(defaults["preferred_terms"]),
+        extra_instructions_text=defaults["extra_instructions_text"],
+        is_active=activate,
+    )
+    db.add(profile)
+    db.flush()
+    return profile
+
+
+def list_prompt_profiles(tenant_id: int) -> list[dict]:
+    with session_scope() as db:
+        profiles = (
+            db.query(TenantAIProfile)
+            .filter(TenantAIProfile.tenant_id == tenant_id)
+            .order_by(desc(TenantAIProfile.version))
+            .all()
+        )
+        return [_prompt_profile_summary(profile) for profile in profiles]
+
+
+def get_active_prompt_profile(tenant_id: int) -> Optional[dict]:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+        if tenant is None:
+            return None
+        profile = (
+            db.query(TenantAIProfile)
+            .filter(TenantAIProfile.tenant_id == tenant_id, TenantAIProfile.is_active.is_(True))
+            .order_by(desc(TenantAIProfile.version))
+            .first()
+        )
+        if profile is None:
+            profile = _create_default_prompt_profile(db, tenant)
+        return _prompt_profile_summary(profile)
+
+
+def get_prompt_profile(tenant_id: int, profile_id: int) -> Optional[dict]:
+    with session_scope() as db:
+        profile = (
+            db.query(TenantAIProfile)
+            .filter(TenantAIProfile.tenant_id == tenant_id, TenantAIProfile.id == profile_id)
+            .one_or_none()
+        )
+        return _prompt_profile_summary(profile) if profile else None
+
+
+def get_call_prompt_profile(call_sid: str) -> Optional[dict]:
+    with session_scope() as db:
+        call = _get_call(db, call_sid)
+        if call and call.prompt_profile:
+            return _prompt_profile_summary(call.prompt_profile)
+        return None
+
+
+def create_prompt_profile(
+    tenant_id: int,
+    label: str,
+    business_name: str,
+    greeting: str,
+    tone: str,
+    verbosity: str,
+    closing_line: str,
+    avoid_phrases: list[str],
+    preferred_terms: list[str],
+    extra_instructions_text: str = "",
+    activate: bool = True,
+) -> Optional[dict]:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+        if tenant is None:
+            return None
+        max_version = (
+            db.query(TenantAIProfile.version)
+            .filter(TenantAIProfile.tenant_id == tenant_id)
+            .order_by(desc(TenantAIProfile.version))
+            .first()
+        )
+        next_version = (max_version[0] if max_version else 0) + 1
+        if activate:
+            db.query(TenantAIProfile).filter(TenantAIProfile.tenant_id == tenant_id).update({"is_active": False})
+        defaults = prompt_profile_defaults(_tenant_summary(tenant))
+        profile = TenantAIProfile(
+            tenant_id=tenant_id,
+            version=next_version,
+            label=label.strip() or f"Prompt v{next_version}",
+            business_name=business_name.strip() or defaults["business_name"],
+            greeting=greeting.strip() or defaults["greeting"],
+            tone=tone.strip() or defaults["tone"],
+            verbosity=verbosity.strip() or defaults["verbosity"],
+            closing_line=closing_line.strip() or defaults["closing_line"],
+            avoid_phrases_json=json.dumps([phrase.strip() for phrase in avoid_phrases if phrase.strip()]),
+            preferred_terms_json=json.dumps([term.strip() for term in preferred_terms if term.strip()]),
+            extra_instructions_text=extra_instructions_text.strip(),
+            is_active=activate,
+        )
+        db.add(profile)
+        db.flush()
+        return _prompt_profile_summary(profile)
+
+
+def activate_prompt_profile(tenant_id: int, profile_id: int) -> Optional[dict]:
+    with session_scope() as db:
+        profile = (
+            db.query(TenantAIProfile)
+            .filter(TenantAIProfile.tenant_id == tenant_id, TenantAIProfile.id == profile_id)
+            .one_or_none()
+        )
+        if profile is None:
+            return None
+        db.query(TenantAIProfile).filter(TenantAIProfile.tenant_id == tenant_id).update({"is_active": False})
+        profile.is_active = True
+        profile.updated_at = utcnow()
+        db.flush()
+        return _prompt_profile_summary(profile)
+
+
 def list_tenants() -> list[dict]:
     with session_scope() as db:
         tenants = db.query(Tenant).order_by(Tenant.id).all()
@@ -196,6 +366,7 @@ def create_tenant(name: str, slug: str, business_name: str, greeting: str, notif
         )
         db.add(settings)
         db.flush()
+        _create_default_prompt_profile(db, tenant)
         return _tenant_summary(tenant)
 
 
@@ -246,6 +417,7 @@ def create_or_update_call(
     from_number: str,
     to_number: str,
     tenant_id: Optional[int] = None,
+    prompt_version_id: Optional[int] = None,
     default_to_tenant: bool = True,
     status: str = "voice_received",
 ) -> dict:
@@ -257,6 +429,7 @@ def create_or_update_call(
         if call is None:
             call = Call(
                 tenant_id=resolved_tenant_id,
+                prompt_version_id=prompt_version_id,
                 call_sid=call_sid,
                 from_number=from_number,
                 to_number=to_number,
@@ -269,6 +442,8 @@ def create_or_update_call(
                 call.tenant_id = resolved_tenant_id
             elif call.tenant_id is None:
                 call.tenant_id = resolved_tenant_id
+            if prompt_version_id is not None:
+                call.prompt_version_id = prompt_version_id
             call.from_number = from_number or call.from_number
             call.to_number = to_number or call.to_number
             if status:
@@ -276,14 +451,22 @@ def create_or_update_call(
         return _call_summary(call)
 
 
-def update_call_stream_started(call_sid: str, stream_sid: str) -> dict:
+def update_call_stream_started(call_sid: str, stream_sid: str, prompt_version_id: Optional[int] = None) -> dict:
     with session_scope() as db:
         call = _get_call(db, call_sid)
         if call is None:
-            call = Call(tenant_id=_default_tenant(db).id, call_sid=call_sid, stream_sid=stream_sid, status="stream_started")
+            call = Call(
+                tenant_id=_default_tenant(db).id,
+                prompt_version_id=prompt_version_id,
+                call_sid=call_sid,
+                stream_sid=stream_sid,
+                status="stream_started",
+            )
             db.add(call)
         else:
             call.stream_sid = stream_sid
+            if prompt_version_id is not None and call.prompt_version_id is None:
+                call.prompt_version_id = prompt_version_id
             call.status = "stream_started"
         db.flush()
         return _call_summary(call)
@@ -475,6 +658,7 @@ def get_call_detail(call_sid: str) -> dict:
         return {
             "call": _call_summary(call) if call else None,
             "tenant": _tenant_summary(call.tenant) if call and call.tenant else None,
+            "prompt_profile": _prompt_profile_summary(call.prompt_profile) if call and call.prompt_profile else None,
             "leads": [_lead_summary(lead) for lead in leads],
             "notifications": [_notification_summary(notification) for notification in notifications],
             "events": [_event_summary(event) for event in events],

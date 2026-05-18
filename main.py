@@ -26,6 +26,7 @@ from config.settings import get_settings
 from storage.database import init_db
 from storage import repository
 from workflow.notifications import SmsSendResult
+from workflow.prompt_builder import DEFAULT_GREETING, PromptBuilder
 from workflow.service_request import process_service_request
 from workflow.sms_result import build_service_request_output
 
@@ -57,97 +58,14 @@ app.include_router(create_admin_router(settings))
 
 # call_sid → {from_number, complete}
 sessions: dict[str, dict] = {}
+prompt_builder = PromptBuilder()
 
 # ---------------------------------------------------------------------------
-# System prompt — edit ONLY this block to change AI persona/behavior
+# Prompt builder
 # ---------------------------------------------------------------------------
 
-SYSTEM_PROMPT = """You're answering phones at a small local plumbing shop. Busy office, normal workday. You sound like a real dispatcher who's done this a hundred times today: casual, practical, not polished, not cheerful-corporate.
-
-Caller number on file: {caller_number}
-
-Your job is to collect exactly these 5 fields:
-1. plumbing issue
-2. urgency / active water status
-3. service address
-4. callback number
-5. customer name
-
-Use this intake flow:
-1. First ask what is going on with the plumbing.
-2. If their answer is vague or missing the key detail, ask ONE useful detail about the issue:
-   - leak: "Leaking from where?"
-   - clog/backup: "Which drain's backed up?"
-   - water heater: "No hot water anywhere, or just one spot?"
-   - toilet: "Clogged, running, or leaking?"
-   Skip this detail question if the caller already gave the answer. Example: if they say "the toilet is leaking from the back" or "water's coming from under the sink", do not ask where it's leaking from. Move to active water / urgency.
-3. Ask whether water is actively leaking or flooding right now.
-4. If water is actively leaking, flooding, running, spraying, or damaging anything, ask ONE safety/triage question before address: "Can you shut the water off there?" Then get address and callback.
-5. Get the service address.
-6. Confirm callback number.
-7. Ask for the customer's name last.
-
-A first name is enough. Never require or ask for a last name. Never invent a caller name. If the caller has not provided a name, ask for their name.
-
-Use this caller number as the default callback. When confirming it, do not say "+1". Say it like a normal U.S. phone number, grouped: "732-789-0675" or "732, 789, 0675". Never read it digit-by-digit. Ask briefly, like: "And this number's good for callback?"
-
-This is a phone call, not a form. Ask one thing, then stop. Let the caller answer. Do not keep going just because the next question is obvious. If the caller gives a short answer like "yes", "no", "yeah", or "right", that only answers the current question.
-
-Never say you didn't hear them before they have had a normal chance to answer. After asking for the address, wait for the address. Don't rush them, don't scold them, and don't say "I didn't get that" unless they actually spoke and the answer was unusable.
-
-Do not call submit_service_request until the caller has actually given all 5 fields. Never guess the name. If the name is missing, ask for it. Put any shutoff answer into the urgency field.
-
-Sound like this:
-Caller: Hi, I need a plumber.
-Dispatcher: Yeah, what's going on?
-Caller: My sink's leaking.
-Dispatcher: Leaking from where?
-Caller: Under the sink.
-Dispatcher: Gotcha. Is water still coming out right now?
-Caller: Yeah.
-Dispatcher: Can you shut the water off there?
-Caller: I think so.
-Dispatcher: Okay, what's the address there?
-Caller: 6100 West 120th Street.
-Dispatcher: Alright. And this number's good for callback?
-Caller: Yes.
-Dispatcher: Okay, what was your name?
-
-More good lines:
-- "Plumbing office, what's going on?"
-- "Leaking from where?"
-- "Is water still coming out right now?"
-- "Can you shut the water off there?"
-- "Which drain's backed up?"
-- "Okay, what's the service address?"
-- "And this number's good for callback?"
-- "Alright, what was your name?"
-- "Okay, you're all set. We'll call you back soon."
-
-Avoid this kind of language completely:
-"I understand", "certainly", "I'd be happy to help", "thank you for calling", "I apologize", "how may I help you", "let me gather some information", "thanks for providing that".
-
-Don't summarize after every answer. Don't repeat their words back. Don't explain why you're asking. Don't ask "anything else?". Don't ask a detail again if the caller already gave it earlier.
-
-When all 5 fields are collected, say one short close:
-"Alright, we got it. Somebody'll give you a call shortly."
-or
-"Okay, you're all set. We'll call you back soon."
-
-Then immediately call submit_service_request. After that, do not continue the conversation. If they say thanks after the close, just say "yep" or "you bet" and stop.
-"""
-
-def make_instructions(caller_number: str, tenant: Optional[dict] = None) -> str:
-    instructions = SYSTEM_PROMPT.format(caller_number=caller_number)
-    if not tenant:
-        return instructions
-    business_name = tenant.get("business_name") or tenant.get("name") or "the plumbing office"
-    greeting = tenant.get("greeting") or "Plumbing office, what's going on?"
-    return (
-        f"Business name for this call: {business_name}\n"
-        f"Use this opening greeting when the call starts: \"{greeting}\"\n\n"
-        f"{instructions}"
-    )
+def make_instructions(caller_number: str, tenant: Optional[dict] = None, prompt_profile: Optional[dict] = None) -> str:
+    return prompt_builder.build(caller_number, tenant=tenant, profile=prompt_profile)
 
 
 # ---------------------------------------------------------------------------
@@ -174,10 +92,10 @@ TOOLS = [
 ]
 
 
-def build_session_update(caller_number: str, tenant: Optional[dict] = None) -> dict:
+def build_session_update(caller_number: str, tenant: Optional[dict] = None, prompt_profile: Optional[dict] = None) -> dict:
     session = {
         "type":        "realtime",
-        "instructions": make_instructions(caller_number, tenant),
+        "instructions": make_instructions(caller_number, tenant, prompt_profile),
         "tools":       TOOLS,
         "tool_choice": "auto",
     }
@@ -255,11 +173,23 @@ async def voice(request: Request):
         )
         return Response(content=twiml, media_type="application/xml")
 
-    repository.create_or_update_call(call_sid, from_number, to_number, tenant_id=tenant["id"])
+    prompt_profile = repository.get_active_prompt_profile(tenant["id"])
+    repository.create_or_update_call(
+        call_sid,
+        from_number,
+        to_number,
+        tenant_id=tenant["id"],
+        prompt_version_id=prompt_profile["id"] if prompt_profile else None,
+    )
     repository.record_call_event(
         call_sid,
         "voice_received",
-        {"from_number": from_number, "to_number": to_number, "tenant_id": tenant["id"]},
+        {
+            "from_number": from_number,
+            "to_number": to_number,
+            "tenant_id": tenant["id"],
+            "prompt_version_id": prompt_profile["id"] if prompt_profile else None,
+        },
     )
 
     sessions[call_sid] = {
@@ -267,6 +197,8 @@ async def voice(request: Request):
         "to_number": to_number,
         "tenant_id": tenant["id"],
         "tenant": tenant,
+        "prompt_profile": prompt_profile,
+        "prompt_version_id": prompt_profile["id"] if prompt_profile else None,
         "complete": False,
     }
 
@@ -526,16 +458,33 @@ async def media_stream(ws: WebSocket):
                 stream_sid  = data["start"]["streamSid"]
                 session     = sessions.setdefault(call_sid, {})
                 tenant      = session.get("tenant") or repository.get_call_tenant(call_sid) or repository.get_default_tenant()
+                prompt_profile = (
+                    session.get("prompt_profile")
+                    or repository.get_call_prompt_profile(call_sid)
+                    or repository.get_active_prompt_profile(tenant["id"])
+                )
                 session["tenant"] = tenant
                 session["tenant_id"] = tenant["id"]
-                session["greeting"] = tenant.get("greeting") or "Plumbing office, what's going on?"
+                session["prompt_profile"] = prompt_profile
+                session["prompt_version_id"] = prompt_profile["id"] if prompt_profile else None
+                session["greeting"] = (
+                    prompt_profile.get("greeting") if prompt_profile else tenant.get("greeting")
+                ) or DEFAULT_GREETING
                 session["notification_sms_number"] = tenant.get("notification_sms_number") or (
                     PLUMBER_PHONE_NUMBER if tenant.get("slug") == "default" else ""
                 )
                 from_number = session.get("from_number", "unknown")
                 log.info(f"[{call_sid}] Stream started  sid={stream_sid}  from={from_number}")
-                repository.update_call_stream_started(call_sid, stream_sid)
-                repository.record_call_event(call_sid, "media_stream_started", data.get("start", {}))
+                repository.update_call_stream_started(
+                    call_sid,
+                    stream_sid,
+                    prompt_version_id=session.get("prompt_version_id"),
+                )
+                repository.record_call_event(
+                    call_sid,
+                    "media_stream_started",
+                    {**data.get("start", {}), "prompt_version_id": session.get("prompt_version_id")},
+                )
 
                 log.info(f"[{call_sid}] Connecting to OpenAI: {OAI_URL}")
                 oai_ws = await websockets.connect(
@@ -544,7 +493,7 @@ async def media_stream(ws: WebSocket):
                 )
                 log.info(f"[{call_sid}] OpenAI connected")
 
-                session_update = build_session_update(from_number, tenant)
+                session_update = build_session_update(from_number, tenant, prompt_profile)
                 raw_su = json.dumps(session_update)
                 log.info(f"[{call_sid}] SENDING session.update")
                 asyncio.create_task(oai_reader())
