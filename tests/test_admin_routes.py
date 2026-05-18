@@ -66,9 +66,56 @@ class AdminRoutesTests(unittest.TestCase):
 
         self.assertEqual(tenants_response.status_code, 200)
         self.assertIn("Default Plumbing", tenants_response.text)
+        self.assertIn(f'href="/admin/tenants/{tenant["id"]}"', tenants_response.text)
+        self.assertIn(f'href="/admin/tenants/{tenant["id"]}/prompt"', tenants_response.text)
+        self.assertIn("Details", tenants_response.text)
         self.assertEqual(detail_response.status_code, 200)
+        self.assertIn("Back to tenants", detail_response.text)
+        self.assertIn("Tenant Summary", detail_response.text)
         self.assertIn("Phone Numbers", detail_response.text)
         self.assertIn("Prompt/persona settings", detail_response.text)
+
+    def test_newly_created_tenant_is_clickable_and_has_prompt_profile(self):
+        create_response = self.client.post(
+            "/admin/tenants",
+            data={
+                "name": "New Tenant Plumbing",
+                "slug": "new-tenant-plumbing",
+                "business_name": "New Tenant Plumbing",
+                "greeting": "New Tenant Plumbing, what's going on?",
+                "notification_sms_number": "+15550001111",
+                "backup_notification_sms_number": "",
+            },
+            auth=("admin", "secret"),
+            follow_redirects=False,
+        )
+
+        self.assertEqual(create_response.status_code, 303)
+        detail_path = create_response.headers["location"]
+        self.assertRegex(detail_path, r"^/admin/tenants/\d+$")
+
+        tenant_id = int(detail_path.rsplit("/", 1)[-1])
+        active_prompt = repository.get_active_prompt_profile(tenant_id)
+        self.assertIsNotNone(active_prompt)
+        self.assertTrue(active_prompt["is_active"])
+
+        tenants_response = self.client.get("/admin/tenants", auth=("admin", "secret"))
+        self.assertEqual(tenants_response.status_code, 200)
+        self.assertIn("New Tenant Plumbing", tenants_response.text)
+        self.assertIn(f'href="/admin/tenants/{tenant_id}"', tenants_response.text)
+        self.assertIn(f'href="/admin/tenants/{tenant_id}/prompt"', tenants_response.text)
+
+        detail_response = self.client.get(detail_path, auth=("admin", "secret"))
+        self.assertEqual(detail_response.status_code, 200)
+        self.assertIn("Back to tenants", detail_response.text)
+        self.assertIn("Prompt/persona settings", detail_response.text)
+
+        prompt_response = self.client.get(f"/admin/tenants/{tenant_id}/prompt", auth=("admin", "secret"))
+        self.assertEqual(prompt_response.status_code, 200)
+        self.assertIn("Generated Prompt Preview", prompt_response.text)
+        self.assertIn("Back to tenant detail", prompt_response.text)
+        self.assertIn("Back to tenants", prompt_response.text)
+        self.assertIn("New Tenant Plumbing, what&#x27;s going on?", prompt_response.text)
 
     def test_prompt_page_renders_preview_and_can_activate_previous_version(self):
         tenant = repository.get_default_tenant()
@@ -76,6 +123,8 @@ class AdminRoutesTests(unittest.TestCase):
 
         prompt_response = self.client.get(f"/admin/tenants/{tenant['id']}/prompt", auth=("admin", "secret"))
         self.assertEqual(prompt_response.status_code, 200)
+        self.assertIn("Back to tenant detail", prompt_response.text)
+        self.assertIn("Back to tenants", prompt_response.text)
         self.assertIn("Core workflow is locked", prompt_response.text)
         self.assertIn("Generated Prompt Preview", prompt_response.text)
         self.assertIn("First name is enough", prompt_response.text)
@@ -108,6 +157,23 @@ class AdminRoutesTests(unittest.TestCase):
         )
         self.assertEqual(activate_response.status_code, 303)
         self.assertEqual(repository.get_active_prompt_profile(tenant["id"])["id"], original["id"])
+
+    def test_invalid_tenant_pages_show_clean_admin_error(self):
+        detail_response = self.client.get("/admin/tenants/999999", auth=("admin", "secret"))
+        prompt_response = self.client.get("/admin/tenants/999999/prompt", auth=("admin", "secret"))
+
+        self.assertEqual(detail_response.status_code, 404)
+        self.assertIn("Tenant 999999 was not found.", detail_response.text)
+        self.assertIn("Back to tenants", detail_response.text)
+        self.assertNotIn("Traceback", detail_response.text)
+        self.assertEqual(prompt_response.status_code, 404)
+        self.assertIn("Tenant 999999 was not found.", prompt_response.text)
+        self.assertNotIn("Traceback", prompt_response.text)
+
+        invalid_response = self.client.get("/admin/tenants/not-a-number", auth=("admin", "secret"))
+        self.assertEqual(invalid_response.status_code, 404)
+        self.assertIn("Tenant not-a-number was not found.", invalid_response.text)
+        self.assertNotIn("Traceback", invalid_response.text)
 
 
 if __name__ == "__main__":

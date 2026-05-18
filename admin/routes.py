@@ -1,6 +1,7 @@
 import json
 import re
 from html import escape
+from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
@@ -43,6 +44,36 @@ def _render_table(rows: list[dict], columns: list[str]) -> str:
         cells = "".join(f"<td>{escape(str(row.get(column, '') or ''))}</td>" for column in columns)
         body.append(f"<tr>{cells}</tr>")
     return f"<table><thead><tr>{header}</tr></thead><tbody>{''.join(body)}</tbody></table>"
+
+
+def _tenant_actions_table(tenants: list[dict]) -> str:
+    if not tenants:
+        return "<p>No tenants yet.</p>"
+    rows = []
+    for tenant in tenants:
+        tenant_id = tenant["id"]
+        detail_href = f"/admin/tenants/{tenant_id}"
+        prompt_href = f"/admin/tenants/{tenant_id}/prompt"
+        rows.append(
+            "<tr>"
+            f'<td><a href="{detail_href}">{escape(tenant.get("name") or "")}</a></td>'
+            f"<td>{escape(str(tenant_id))}</td>"
+            f"<td>{escape(tenant.get('slug') or '')}</td>"
+            f"<td>{escape(tenant.get('status') or '')}</td>"
+            f"<td>{escape(tenant.get('business_name') or '')}</td>"
+            f"<td>{escape(tenant.get('notification_sms_number') or '')}</td>"
+            f'<td><a href="{detail_href}">Details</a></td>'
+            f'<td><a href="{prompt_href}">Prompt/persona settings</a></td>'
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr>"
+        "<th>tenant</th><th>id</th><th>slug</th><th>status</th><th>business_name</th>"
+        "<th>notification_sms_number</th><th>details</th><th>prompt</th>"
+        "</tr></thead><tbody>"
+        f"{''.join(rows)}"
+        "</tbody></table>"
+    )
 
 
 def _slugify(value: str) -> str:
@@ -112,7 +143,7 @@ def _prompt_history_table(tenant_id: int, profiles: list[dict]) -> str:
     )
 
 
-def _page(title: str, body: str) -> HTMLResponse:
+def _page(title: str, body: str, status_code: int = 200) -> HTMLResponse:
     html = f"""
 <!doctype html>
 <html>
@@ -136,7 +167,25 @@ def _page(title: str, body: str) -> HTMLResponse:
 </body>
 </html>
 """
-    return HTMLResponse(html)
+    return HTMLResponse(html, status_code=status_code)
+
+
+def _admin_not_found(title: str, message: str) -> HTMLResponse:
+    body = "\n".join(
+        [
+            f"<p>{escape(message)}</p>",
+            '<p><a href="/admin/tenants">Back to tenants</a></p>',
+        ]
+    )
+    return _page(title, body, status_code=404)
+
+
+def _parse_tenant_id(value: str) -> Optional[int]:
+    try:
+        tenant_id = int(value)
+    except (TypeError, ValueError):
+        return None
+    return tenant_id if tenant_id > 0 else None
 
 
 def create_admin_router(settings: Settings) -> APIRouter:
@@ -170,20 +219,10 @@ def create_admin_router(settings: Settings) -> APIRouter:
     async def admin_tenants():
         tenants = repository.list_tenants()
         phones = repository.list_tenant_phone_numbers()
-        tenant_links = [
-            {
-                **tenant,
-                "detail": f"/admin/tenants/{tenant['id']}",
-            }
-            for tenant in tenants
-        ]
         body = "\n".join(
             [
                 "<h2>Tenants</h2>",
-                _render_table(
-                    tenant_links,
-                    ["id", "name", "slug", "status", "business_name", "notification_sms_number", "detail"],
-                ),
+                _tenant_actions_table(tenants),
                 "<h2>Tenant Phone Numbers</h2>",
                 _render_table(phones, ["id", "tenant_id", "twilio_number", "label", "active", "created_at"]),
                 "<h2>Create Tenant</h2>",
@@ -224,19 +263,40 @@ def create_admin_router(settings: Settings) -> APIRouter:
         return RedirectResponse(f"/admin/tenants/{tenant['id']}", status_code=303)
 
     @router.get("/admin/tenants/{tenant_id}", response_class=HTMLResponse)
-    async def admin_tenant_detail(tenant_id: int):
+    async def admin_tenant_detail(tenant_id: str):
+        parsed_tenant_id = _parse_tenant_id(tenant_id)
+        if parsed_tenant_id is None:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        tenant_id = parsed_tenant_id
         tenant = repository.get_tenant(tenant_id)
         if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
         phones = repository.list_tenant_phone_numbers(tenant_id)
         calls = repository.list_recent_calls(tenant_id=tenant_id)
         leads = repository.list_recent_leads(tenant_id=tenant_id)
         notifications = repository.list_recent_notifications(tenant_id=tenant_id)
         events = repository.list_recent_call_events(tenant_id=tenant_id)
+        tenant_summary = [
+            {
+                "id": tenant["id"],
+                "name": tenant["name"],
+                "slug": tenant["slug"],
+                "status": tenant["status"],
+                "business_name": tenant.get("business_name") or "",
+                "notification_sms_number": tenant.get("notification_sms_number") or "",
+                "backup_notification_sms_number": tenant.get("backup_notification_sms_number") or "",
+            }
+        ]
         body = "\n".join(
             [
                 f"<h2>{escape(tenant['name'])}</h2>",
-                f'<p><a href="/admin/tenants/{tenant_id}/prompt">Prompt/persona settings</a></p>',
+                '<p><a href="/admin/tenants">Back to tenants</a></p>',
+                f'<p><strong><a href="/admin/tenants/{tenant_id}/prompt">Prompt/persona settings</a></strong></p>',
+                "<h3>Tenant Summary</h3>",
+                _render_table(
+                    tenant_summary,
+                    ["id", "name", "slug", "status", "business_name", "notification_sms_number", "backup_notification_sms_number"],
+                ),
                 "<h3>Settings</h3>",
                 f'<form method="post" action="/admin/tenants/{tenant_id}/settings">',
                 _input("business_name", tenant.get("business_name") or tenant.get("name") or ""),
@@ -273,16 +333,21 @@ def create_admin_router(settings: Settings) -> APIRouter:
         return _page(f"Tenant {tenant_id}", body)
 
     @router.get("/admin/tenants/{tenant_id}/prompt", response_class=HTMLResponse)
-    async def admin_tenant_prompt(tenant_id: int):
+    async def admin_tenant_prompt(tenant_id: str):
+        parsed_tenant_id = _parse_tenant_id(tenant_id)
+        if parsed_tenant_id is None:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        tenant_id = parsed_tenant_id
         tenant = repository.get_tenant(tenant_id)
         if not tenant:
-            raise HTTPException(status_code=404, detail="Tenant not found")
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
         active_profile = repository.get_active_prompt_profile(tenant_id)
         profiles = repository.list_prompt_profiles(tenant_id)
         preview = PromptBuilder().build("913-555-0123", tenant=tenant, profile=active_profile) if active_profile else ""
         body = "\n".join(
             [
                 f"<h2>{escape(tenant['name'])} Prompt</h2>",
+                f'<p><a href="/admin/tenants/{tenant_id}">Back to tenant detail</a> | <a href="/admin/tenants">Back to tenants</a></p>',
                 "<h3>Core workflow is locked</h3>",
                 "<p>Style/persona settings can change wording, but required fields cannot be changed here. Required fields stay: issue, urgency, address, callback, name. First name is enough; last name is not required.</p>",
                 "<h3>Active Prompt Version</h3>",
@@ -334,14 +399,14 @@ def create_admin_router(settings: Settings) -> APIRouter:
             activate=True,
         )
         if not profile:
-            raise HTTPException(status_code=404, detail="Tenant not found")
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
         return RedirectResponse(f"/admin/tenants/{tenant_id}/prompt", status_code=303)
 
     @router.post("/admin/tenants/{tenant_id}/prompt/{profile_id}/activate")
     async def admin_activate_prompt_version(tenant_id: int, profile_id: int):
         profile = repository.activate_prompt_profile(tenant_id, profile_id)
         if not profile:
-            raise HTTPException(status_code=404, detail="Prompt version not found")
+            return _admin_not_found("Prompt Version Not Found", f"Prompt version {profile_id} was not found for tenant {tenant_id}.")
         return RedirectResponse(f"/admin/tenants/{tenant_id}/prompt", status_code=303)
 
     @router.post("/admin/tenants/{tenant_id}/settings")
