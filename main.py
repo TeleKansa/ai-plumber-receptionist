@@ -12,7 +12,6 @@ import audioop
 import base64
 import json
 import logging
-import os
 from typing import Optional
 
 import websockets
@@ -21,6 +20,9 @@ from dotenv import load_dotenv
 from fastapi import FastAPI, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response, PlainTextResponse
 from twilio.rest import Client as TwilioClient
+
+from config.settings import get_settings
+from workflow.sms_result import build_service_request_output
 
 load_dotenv()
 
@@ -34,14 +36,15 @@ log = logging.getLogger("plumber")
 # Config
 # ---------------------------------------------------------------------------
 
-OPENAI_API_KEY       = os.getenv("OPENAI_API_KEY",       "")
-TWILIO_ACCOUNT_SID   = os.getenv("TWILIO_ACCOUNT_SID",   "")
-TWILIO_AUTH_TOKEN    = os.getenv("TWILIO_AUTH_TOKEN",    "")
-TWILIO_PHONE_NUMBER  = os.getenv("TWILIO_PHONE_NUMBER",  "")
-PLUMBER_PHONE_NUMBER = os.getenv("PLUMBER_PHONE_NUMBER", "")
-HOST = "ai-plumber-receptionist-production.up.railway.app"
+settings = get_settings()
 
-OAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-1.5"
+OPENAI_API_KEY       = settings.openai_api_key
+TWILIO_ACCOUNT_SID   = settings.twilio_account_sid
+TWILIO_AUTH_TOKEN    = settings.twilio_auth_token
+TWILIO_PHONE_NUMBER  = settings.twilio_phone_number
+PLUMBER_PHONE_NUMBER = settings.plumber_phone_number
+HOST                 = settings.host
+OAI_URL              = settings.oai_url
 
 twilio = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app    = FastAPI()
@@ -406,7 +409,7 @@ async def media_stream(ws: WebSocket):
                         "item": {
                             "type":    "function_call_output",
                             "call_id": call_id,
-                            "output":  json.dumps({"success": True}),
+                            "output":  build_service_request_output(sms_sent),
                         },
                     }))
                     if sms_sent:
