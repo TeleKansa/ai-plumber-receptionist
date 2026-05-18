@@ -6,6 +6,15 @@ from sqlalchemy import inspect, text
 TENANT_SCOPED_TABLES = ("calls", "leads", "notifications", "call_events")
 
 
+def _normalize_phone(value: str) -> str:
+    if not value:
+        return ""
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) == 10:
+        return f"1{digits}"
+    return digits
+
+
 def _columns_for(engine, table_name: str) -> set[str]:
     inspector = inspect(engine)
     if table_name not in inspector.get_table_names():
@@ -77,11 +86,18 @@ def ensure_default_tenant(engine, settings):
             )
 
         if settings.twilio_phone_number:
+            normalized_default_phone = _normalize_phone(settings.twilio_phone_number)
             phone_id = _scalar(
                 conn,
                 "SELECT id FROM tenant_phone_numbers WHERE twilio_number = :twilio_number",
                 {"twilio_number": settings.twilio_phone_number},
             )
+            if phone_id is None and normalized_default_phone:
+                rows = conn.execute(text("SELECT id, twilio_number FROM tenant_phone_numbers")).mappings().all()
+                for row in rows:
+                    if _normalize_phone(row["twilio_number"]) == normalized_default_phone:
+                        phone_id = row["id"]
+                        break
             if phone_id is None:
                 conn.execute(
                     text(
@@ -96,6 +112,15 @@ def ensure_default_tenant(engine, settings):
                         "active": True,
                         "created_at": now,
                     },
+                )
+            else:
+                conn.execute(
+                    text(
+                        "UPDATE tenant_phone_numbers "
+                        "SET tenant_id = :tenant_id, active = :active "
+                        "WHERE id = :phone_id"
+                    ),
+                    {"tenant_id": tenant_id, "active": True, "phone_id": phone_id},
                 )
 
         for table_name in TENANT_SCOPED_TABLES:

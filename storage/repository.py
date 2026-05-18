@@ -7,10 +7,17 @@ from storage.database import session_scope
 from storage.models import Call, CallEvent, Lead, Notification, Tenant, TenantPhoneNumber, TenantSettings, utcnow
 
 
-def _normalize_phone(value: Optional[str]) -> str:
+def normalize_phone_number(value: Optional[str]) -> str:
     if not value:
         return ""
-    return "".join(ch for ch in value if ch.isdigit())
+    digits = "".join(ch for ch in value if ch.isdigit())
+    if len(digits) == 10:
+        return f"1{digits}"
+    return digits
+
+
+def _normalize_phone(value: Optional[str]) -> str:
+    return normalize_phone_number(value)
 
 
 def _tenant_summary(tenant: Tenant) -> dict:
@@ -153,18 +160,17 @@ def find_tenant_by_phone_number(twilio_number: str) -> Optional[dict]:
                 .filter(TenantPhoneNumber.active.is_(True), Tenant.status == "active")
                 .all()
             )
-            for candidate in phones:
-                if _normalize_phone(candidate.twilio_number) == normalized:
-                    phone = candidate
-                    break
+            matches = [candidate for candidate in phones if _normalize_phone(candidate.twilio_number) == normalized]
+            if len(matches) == 1:
+                phone = matches[0]
         return _tenant_summary(phone.tenant) if phone else None
 
 
-def resolve_tenant_for_phone(twilio_number: str) -> tuple[dict, bool]:
+def resolve_tenant_for_phone(twilio_number: str) -> tuple[Optional[dict], bool]:
     tenant = find_tenant_by_phone_number(twilio_number)
     if tenant:
         return tenant, True
-    return get_default_tenant(), False
+    return None, False
 
 
 def get_call_tenant(call_sid: str) -> Optional[dict]:
@@ -172,8 +178,6 @@ def get_call_tenant(call_sid: str) -> Optional[dict]:
         call = _get_call(db, call_sid)
         if call and call.tenant:
             return _tenant_summary(call.tenant)
-        if call:
-            return _tenant_summary(_default_tenant(db))
         return None
 
 
@@ -237,27 +241,38 @@ def add_tenant_phone_number(tenant_id: int, twilio_number: str, label: str = "",
         return _tenant_phone_summary(phone)
 
 
-def create_or_update_call(call_sid: str, from_number: str, to_number: str, tenant_id: Optional[int] = None) -> dict:
+def create_or_update_call(
+    call_sid: str,
+    from_number: str,
+    to_number: str,
+    tenant_id: Optional[int] = None,
+    default_to_tenant: bool = True,
+    status: str = "voice_received",
+) -> dict:
     with session_scope() as db:
-        if tenant_id is None:
-            tenant_id = _default_tenant(db).id
+        resolved_tenant_id = tenant_id
+        if resolved_tenant_id is None and default_to_tenant:
+            resolved_tenant_id = _default_tenant(db).id
         call = _get_call(db, call_sid)
         if call is None:
             call = Call(
-                tenant_id=tenant_id,
+                tenant_id=resolved_tenant_id,
                 call_sid=call_sid,
                 from_number=from_number,
                 to_number=to_number,
-                status="voice_received",
+                status=status,
             )
             db.add(call)
             db.flush()
         else:
-            call.tenant_id = tenant_id or call.tenant_id
+            if tenant_id is not None or not default_to_tenant:
+                call.tenant_id = resolved_tenant_id
+            elif call.tenant_id is None:
+                call.tenant_id = resolved_tenant_id
             call.from_number = from_number or call.from_number
             call.to_number = to_number or call.to_number
-            if call.status == "new":
-                call.status = "voice_received"
+            if status:
+                call.status = status
         return _call_summary(call)
 
 
@@ -285,10 +300,23 @@ def mark_call_ended(call_sid: str, status: str = "ended") -> None:
             call.ended_at = utcnow()
 
 
-def record_call_event(call_sid: str, event_type: str, payload: dict, tenant_id: Optional[int] = None) -> dict:
+def record_call_event(
+    call_sid: str,
+    event_type: str,
+    payload: dict,
+    tenant_id: Optional[int] = None,
+    default_to_tenant: bool = True,
+) -> dict:
     with session_scope() as db:
         call = _get_call(db, call_sid)
-        event_tenant_id = tenant_id or (call.tenant_id if call and call.tenant_id else _default_tenant(db).id)
+        if tenant_id is not None:
+            event_tenant_id = tenant_id
+        elif call and call.tenant_id:
+            event_tenant_id = call.tenant_id
+        elif default_to_tenant:
+            event_tenant_id = _default_tenant(db).id
+        else:
+            event_tenant_id = None
         event = CallEvent(
             tenant_id=event_tenant_id,
             call_id=call.id if call else None,

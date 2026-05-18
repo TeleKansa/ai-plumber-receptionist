@@ -226,14 +226,36 @@ async def voice(request: Request):
     log.info(f"[{call_sid}] Incoming call from {from_number}")
 
     tenant, tenant_matched = repository.resolve_tenant_for_phone(to_number)
-    repository.create_or_update_call(call_sid, from_number, to_number, tenant_id=tenant["id"])
-    if not tenant_matched:
+    if not tenant_matched or tenant is None:
+        log.warning(f"[{call_sid}] Tenant lookup failed for Twilio To={to_number}; rejecting call")
+        repository.create_or_update_call(
+            call_sid,
+            from_number,
+            to_number,
+            tenant_id=None,
+            default_to_tenant=False,
+            status="tenant_lookup_failed",
+        )
         repository.record_call_event(
             call_sid,
             "tenant_lookup_failed",
-            {"to_number": to_number, "fallback_tenant_id": tenant["id"], "fallback_slug": tenant["slug"]},
-            tenant_id=tenant["id"],
+            {
+                "from_number": from_number,
+                "to_number": to_number,
+                "normalized_to_number": repository.normalize_phone_number(to_number),
+                "reason": "No active tenant phone number matched incoming Twilio To number.",
+            },
+            default_to_tenant=False,
         )
+        twiml = (
+            "<Response>"
+            "<Say>Sorry, this line is not configured yet.</Say>"
+            "<Hangup/>"
+            "</Response>"
+        )
+        return Response(content=twiml, media_type="application/xml")
+
+    repository.create_or_update_call(call_sid, from_number, to_number, tenant_id=tenant["id"])
     repository.record_call_event(
         call_sid,
         "voice_received",
