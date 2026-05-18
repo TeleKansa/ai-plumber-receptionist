@@ -92,12 +92,13 @@ class Tenant(Base):
     id = Column(Integer, primary_key=True)
     name = Column(String(255), nullable=False)
     slug = Column(String(128), unique=True, nullable=False, index=True)
-    status = Column(String(64), nullable=False, default="active")
+    status = Column(String(64), nullable=False, default="onboarding")
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
     phone_numbers = relationship("TenantPhoneNumber", back_populates="tenant")
     settings = relationship("TenantSettings", back_populates="tenant", uselist=False)
+    telephony_profile = relationship("TenantTelephonyProfile", back_populates="tenant", uselist=False)
     ai_profiles = relationship("TenantAIProfile", back_populates="tenant")
     calls = relationship("Call", back_populates="tenant")
     leads = relationship("Lead", back_populates="tenant")
@@ -113,9 +114,28 @@ class TenantPhoneNumber(Base):
     twilio_number = Column(String(64), unique=True, nullable=False, index=True)
     label = Column(String(255), nullable=True)
     active = Column(Boolean, nullable=False, default=True)
+    accepts_live_calls = Column(Boolean, nullable=False, default=False)
+    purpose = Column(String(64), nullable=True)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
 
     tenant = relationship("Tenant", back_populates="phone_numbers")
+
+
+class TenantTelephonyProfile(Base):
+    __tablename__ = "tenant_telephony_profiles"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), unique=True, nullable=False, index=True)
+    public_business_number = Column(String(64), nullable=True)
+    ai_ingress_twilio_number = Column(String(64), nullable=True)
+    routing_mode = Column(String(128), nullable=False, default="forwarded_google_maps_number")
+    forwarding_setup_status = Column(String(64), nullable=False, default="not_started")
+    test_mode_enabled = Column(Boolean, nullable=False, default=False)
+    allowed_test_callers_json = Column(Text, nullable=False, default="[]")
+    live_enabled_at = Column(DateTime(timezone=True), nullable=True)
+    notes = Column(Text, nullable=False, default="")
+
+    tenant = relationship("Tenant", back_populates="telephony_profile")
 
 
 class TenantSettings(Base):

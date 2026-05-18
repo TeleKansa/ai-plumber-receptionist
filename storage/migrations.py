@@ -5,6 +5,8 @@ from sqlalchemy import inspect, text
 
 
 TENANT_SCOPED_TABLES = ("calls", "leads", "notifications", "call_events")
+DEFAULT_ROUTING_MODE = "forwarded_google_maps_number"
+DEFAULT_FORWARDING_STATUS = "not_started"
 DEFAULT_TONE = "casual, practical, not polished, not cheerful-corporate"
 DEFAULT_VERBOSITY = "brief; ask one thing, then stop"
 DEFAULT_CLOSING_LINE = "Okay, you're all set. We'll call you back soon."
@@ -46,6 +48,11 @@ def add_missing_tenant_columns(engine):
         call_columns = _columns_for(engine, "calls")
         if call_columns and "prompt_version_id" not in call_columns:
             conn.execute(text("ALTER TABLE calls ADD COLUMN prompt_version_id INTEGER"))
+        phone_columns = _columns_for(engine, "tenant_phone_numbers")
+        if phone_columns and "accepts_live_calls" not in phone_columns:
+            conn.execute(text("ALTER TABLE tenant_phone_numbers ADD COLUMN accepts_live_calls BOOLEAN DEFAULT FALSE"))
+        if phone_columns and "purpose" not in phone_columns:
+            conn.execute(text("ALTER TABLE tenant_phone_numbers ADD COLUMN purpose VARCHAR(64)"))
 
 
 def _scalar(conn, sql: str, params: dict):
@@ -64,11 +71,27 @@ def ensure_default_tenant(engine, settings):
             conn.execute(
                 text(
                     "INSERT INTO tenants (name, slug, status, created_at, updated_at) "
-                    "VALUES (:name, :slug, 'active', :created_at, :updated_at)"
+                    "VALUES (:name, :slug, 'live', :created_at, :updated_at)"
                 ),
                 {"name": name, "slug": slug, "created_at": now, "updated_at": now},
             )
             tenant_id = _scalar(conn, "SELECT id FROM tenants WHERE slug = :slug", {"slug": slug})
+        else:
+            conn.execute(
+                text(
+                    "UPDATE tenants SET status = 'live', updated_at = :updated_at "
+                    "WHERE id = :tenant_id AND (status IS NULL OR status = '' OR status = 'active')"
+                ),
+                {"tenant_id": tenant_id, "updated_at": now},
+            )
+
+        conn.execute(
+            text(
+                "UPDATE tenants SET status = 'onboarding', updated_at = :updated_at "
+                "WHERE id != :tenant_id AND (status IS NULL OR status = '' OR status = 'active')"
+            ),
+            {"tenant_id": tenant_id, "updated_at": now},
+        )
 
         settings_id = _scalar(
             conn,
@@ -120,14 +143,16 @@ def ensure_default_tenant(engine, settings):
                 conn.execute(
                     text(
                         "INSERT INTO tenant_phone_numbers "
-                        "(tenant_id, twilio_number, label, active, created_at) "
-                        "VALUES (:tenant_id, :twilio_number, :label, :active, :created_at)"
+                        "(tenant_id, twilio_number, label, active, accepts_live_calls, purpose, created_at) "
+                        "VALUES (:tenant_id, :twilio_number, :label, :active, :accepts_live_calls, :purpose, :created_at)"
                     ),
                     {
                         "tenant_id": tenant_id,
                         "twilio_number": settings.twilio_phone_number,
                         "label": "Default Twilio number",
                         "active": True,
+                        "accepts_live_calls": True,
+                        "purpose": "ai_forwarding",
                         "created_at": now,
                     },
                 )
@@ -135,11 +160,27 @@ def ensure_default_tenant(engine, settings):
                 conn.execute(
                     text(
                         "UPDATE tenant_phone_numbers "
-                        "SET tenant_id = :tenant_id, active = :active "
+                        "SET tenant_id = :tenant_id, active = :active, "
+                        "accepts_live_calls = :accepts_live_calls, purpose = :purpose "
                         "WHERE id = :phone_id"
                     ),
-                    {"tenant_id": tenant_id, "active": True, "phone_id": phone_id},
+                    {
+                        "tenant_id": tenant_id,
+                        "active": True,
+                        "accepts_live_calls": True,
+                        "purpose": "ai_forwarding",
+                        "phone_id": phone_id,
+                    },
                 )
+
+        if "accepts_live_calls" in _columns_for(engine, "tenant_phone_numbers"):
+            conn.execute(
+                text(
+                    "UPDATE tenant_phone_numbers SET accepts_live_calls = :accepts_live_calls "
+                    "WHERE tenant_id != :tenant_id AND accepts_live_calls IS NULL"
+                ),
+                {"tenant_id": tenant_id, "accepts_live_calls": False},
+            )
 
         for table_name in TENANT_SCOPED_TABLES:
             if "tenant_id" in _columns_for(engine, table_name):
@@ -206,8 +247,64 @@ def ensure_default_prompt_profiles(engine):
             )
 
 
+def ensure_default_telephony_profiles(engine, default_tenant_id, settings):
+    now = datetime.now(timezone.utc)
+    with engine.begin() as conn:
+        tenants = conn.execute(text("SELECT id, slug FROM tenants")).mappings().all()
+        for tenant in tenants:
+            is_default = tenant["id"] == default_tenant_id
+            profile_id = _scalar(
+                conn,
+                "SELECT id FROM tenant_telephony_profiles WHERE tenant_id = :tenant_id",
+                {"tenant_id": tenant["id"]},
+            )
+            if profile_id is None:
+                conn.execute(
+                    text(
+                        "INSERT INTO tenant_telephony_profiles "
+                        "(tenant_id, public_business_number, ai_ingress_twilio_number, routing_mode, "
+                        "forwarding_setup_status, test_mode_enabled, allowed_test_callers_json, "
+                        "live_enabled_at, notes) "
+                        "VALUES (:tenant_id, :public_business_number, :ai_ingress_twilio_number, :routing_mode, "
+                        ":forwarding_setup_status, :test_mode_enabled, :allowed_test_callers_json, "
+                        ":live_enabled_at, :notes)"
+                    ),
+                    {
+                        "tenant_id": tenant["id"],
+                        "public_business_number": "",
+                        "ai_ingress_twilio_number": settings.twilio_phone_number if is_default else "",
+                        "routing_mode": DEFAULT_ROUTING_MODE,
+                        "forwarding_setup_status": "verified" if is_default else DEFAULT_FORWARDING_STATUS,
+                        "test_mode_enabled": False,
+                        "allowed_test_callers_json": "[]",
+                        "live_enabled_at": now if is_default else None,
+                        "notes": "",
+                    },
+                )
+            elif is_default and settings.twilio_phone_number:
+                conn.execute(
+                    text(
+                        "UPDATE tenant_telephony_profiles "
+                        "SET ai_ingress_twilio_number = :ai_ingress_twilio_number, "
+                        "routing_mode = :routing_mode, "
+                        "forwarding_setup_status = CASE "
+                        "WHEN forwarding_setup_status IS NULL OR forwarding_setup_status = '' OR forwarding_setup_status = 'not_started' "
+                        "THEN 'verified' ELSE forwarding_setup_status END, "
+                        "live_enabled_at = COALESCE(live_enabled_at, :live_enabled_at) "
+                        "WHERE tenant_id = :tenant_id"
+                    ),
+                    {
+                        "tenant_id": tenant["id"],
+                        "ai_ingress_twilio_number": settings.twilio_phone_number,
+                        "routing_mode": DEFAULT_ROUTING_MODE,
+                        "live_enabled_at": now,
+                    },
+                )
+
+
 def run_schema_migrations(engine, settings):
     add_missing_tenant_columns(engine)
     default_tenant_id = ensure_default_tenant(engine, settings)
+    ensure_default_telephony_profiles(engine, default_tenant_id, settings)
     ensure_default_prompt_profiles(engine)
     return default_tenant_id

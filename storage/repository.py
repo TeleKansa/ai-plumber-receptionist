@@ -13,6 +13,7 @@ from storage.models import (
     TenantAIProfile,
     TenantPhoneNumber,
     TenantSettings,
+    TenantTelephonyProfile,
     utcnow,
 )
 from workflow.prompt_builder import prompt_profile_defaults
@@ -55,7 +56,24 @@ def _tenant_phone_summary(phone: TenantPhoneNumber) -> dict:
         "twilio_number": phone.twilio_number,
         "label": phone.label,
         "active": phone.active,
+        "accepts_live_calls": phone.accepts_live_calls,
+        "purpose": phone.purpose,
         "created_at": phone.created_at,
+    }
+
+
+def _telephony_profile_summary(profile: TenantTelephonyProfile) -> dict:
+    return {
+        "id": profile.id,
+        "tenant_id": profile.tenant_id,
+        "public_business_number": profile.public_business_number,
+        "ai_ingress_twilio_number": profile.ai_ingress_twilio_number,
+        "routing_mode": profile.routing_mode,
+        "forwarding_setup_status": profile.forwarding_setup_status,
+        "test_mode_enabled": profile.test_mode_enabled,
+        "allowed_test_callers_json": profile.allowed_test_callers_json,
+        "live_enabled_at": profile.live_enabled_at,
+        "notes": profile.notes,
     }
 
 
@@ -193,6 +211,105 @@ def _create_default_prompt_profile(db, tenant: Tenant, activate: bool = True) ->
     return profile
 
 
+def _create_default_telephony_profile(db, tenant: Tenant) -> TenantTelephonyProfile:
+    profile = TenantTelephonyProfile(
+        tenant_id=tenant.id,
+        public_business_number="",
+        ai_ingress_twilio_number="",
+        routing_mode="forwarded_google_maps_number",
+        forwarding_setup_status="not_started",
+        test_mode_enabled=False,
+        allowed_test_callers_json="[]",
+        notes="",
+    )
+    db.add(profile)
+    db.flush()
+    return profile
+
+
+def _get_or_create_telephony_profile(db, tenant: Tenant) -> TenantTelephonyProfile:
+    if tenant.telephony_profile:
+        return tenant.telephony_profile
+    return _create_default_telephony_profile(db, tenant)
+
+
+def get_telephony_profile(tenant_id: int) -> Optional[dict]:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+        if tenant is None:
+            return None
+        return _telephony_profile_summary(_get_or_create_telephony_profile(db, tenant))
+
+
+def update_telephony_profile(
+    tenant_id: int,
+    public_business_number: str = "",
+    ai_ingress_twilio_number: str = "",
+    forwarding_setup_status: str = "not_started",
+    test_mode_enabled: bool = False,
+    allowed_test_callers: Optional[list[str]] = None,
+    notes: str = "",
+) -> Optional[dict]:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+        if tenant is None:
+            return None
+        profile = _get_or_create_telephony_profile(db, tenant)
+        profile.public_business_number = public_business_number.strip()
+        profile.ai_ingress_twilio_number = ai_ingress_twilio_number.strip()
+        profile.routing_mode = "forwarded_google_maps_number"
+        profile.forwarding_setup_status = forwarding_setup_status.strip() or "not_started"
+        profile.test_mode_enabled = bool(test_mode_enabled)
+        profile.allowed_test_callers_json = json.dumps(allowed_test_callers or [])
+        profile.notes = notes.strip()
+        db.flush()
+        return _telephony_profile_summary(profile)
+
+
+def set_tenant_status(tenant_id: int, status: str) -> Optional[dict]:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+        if tenant is None:
+            return None
+        tenant.status = status.strip() or tenant.status
+        tenant.updated_at = utcnow()
+        db.flush()
+        return _tenant_summary(tenant)
+
+
+def set_tenant_live(tenant_id: int) -> Optional[dict]:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+        if tenant is None:
+            return None
+        tenant.status = "live"
+        tenant.updated_at = utcnow()
+        profile = _get_or_create_telephony_profile(db, tenant)
+        profile.live_enabled_at = utcnow()
+        if profile.forwarding_setup_status in ("not_started", "instructions_sent", "customer_configured"):
+            profile.forwarding_setup_status = "verified"
+        db.flush()
+        return _tenant_summary(tenant)
+
+
+def set_tenant_paused(tenant_id: int) -> Optional[dict]:
+    return set_tenant_status(tenant_id, "paused")
+
+
+def set_tenant_phone_live(tenant_id: int, phone_id: int, accepts_live_calls: bool) -> Optional[dict]:
+    with session_scope() as db:
+        phone = (
+            db.query(TenantPhoneNumber)
+            .filter(TenantPhoneNumber.tenant_id == tenant_id, TenantPhoneNumber.id == phone_id)
+            .one_or_none()
+        )
+        if phone is None:
+            return None
+        phone.accepts_live_calls = bool(accepts_live_calls)
+        db.flush()
+        return _tenant_phone_summary(phone)
+
+
 def list_prompt_profiles(tenant_id: int) -> list[dict]:
     with session_scope() as db:
         profiles = (
@@ -314,26 +431,33 @@ def list_tenant_phone_numbers(tenant_id: Optional[int] = None) -> list[dict]:
         return [_tenant_phone_summary(phone) for phone in query.all()]
 
 
-def find_tenant_by_phone_number(twilio_number: str) -> Optional[dict]:
+def find_tenant_phone_by_number(twilio_number: str) -> Optional[dict]:
     normalized = _normalize_phone(twilio_number)
     with session_scope() as db:
         phone = (
             db.query(TenantPhoneNumber)
             .join(Tenant)
-            .filter(TenantPhoneNumber.twilio_number == twilio_number, TenantPhoneNumber.active.is_(True), Tenant.status == "active")
+            .filter(TenantPhoneNumber.twilio_number == twilio_number, TenantPhoneNumber.active.is_(True))
             .one_or_none()
         )
         if phone is None and normalized:
             phones = (
                 db.query(TenantPhoneNumber)
                 .join(Tenant)
-                .filter(TenantPhoneNumber.active.is_(True), Tenant.status == "active")
+                .filter(TenantPhoneNumber.active.is_(True))
                 .all()
             )
             matches = [candidate for candidate in phones if _normalize_phone(candidate.twilio_number) == normalized]
             if len(matches) == 1:
                 phone = matches[0]
-        return _tenant_summary(phone.tenant) if phone else None
+        if not phone or not phone.tenant or phone.tenant.status == "archived":
+            return None
+        return _tenant_phone_summary(phone)
+
+
+def find_tenant_by_phone_number(twilio_number: str) -> Optional[dict]:
+    phone = find_tenant_phone_by_number(twilio_number)
+    return get_tenant(phone["tenant_id"]) if phone else None
 
 
 def resolve_tenant_for_phone(twilio_number: str) -> tuple[Optional[dict], bool]:
@@ -341,6 +465,16 @@ def resolve_tenant_for_phone(twilio_number: str) -> tuple[Optional[dict], bool]:
     if tenant:
         return tenant, True
     return None, False
+
+
+def resolve_tenant_phone_for_number(twilio_number: str) -> tuple[Optional[dict], Optional[dict], bool]:
+    phone = find_tenant_phone_by_number(twilio_number)
+    if not phone:
+        return None, None, False
+    tenant = get_tenant(phone["tenant_id"])
+    if not tenant:
+        return None, None, False
+    return tenant, phone, True
 
 
 def get_call_tenant(call_sid: str) -> Optional[dict]:
@@ -351,9 +485,9 @@ def get_call_tenant(call_sid: str) -> Optional[dict]:
         return None
 
 
-def create_tenant(name: str, slug: str, business_name: str, greeting: str, notification_sms_number: str, backup_notification_sms_number: str = "", status: str = "active") -> dict:
+def create_tenant(name: str, slug: str, business_name: str, greeting: str, notification_sms_number: str, backup_notification_sms_number: str = "", status: str = "onboarding") -> dict:
     with session_scope() as db:
-        tenant = Tenant(name=name.strip(), slug=slug.strip(), status=status or "active")
+        tenant = Tenant(name=name.strip(), slug=slug.strip(), status=status or "onboarding")
         db.add(tenant)
         db.flush()
         settings = TenantSettings(
@@ -366,6 +500,7 @@ def create_tenant(name: str, slug: str, business_name: str, greeting: str, notif
         )
         db.add(settings)
         db.flush()
+        _create_default_telephony_profile(db, tenant)
         _create_default_prompt_profile(db, tenant)
         return _tenant_summary(tenant)
 
@@ -387,18 +522,27 @@ def update_tenant_settings(tenant_id: int, business_name: str, greeting: str, no
         settings.greeting = greeting.strip() or settings.greeting
         settings.notification_sms_number = notification_sms_number.strip()
         settings.backup_notification_sms_number = backup_notification_sms_number.strip() or None
-        settings.active = status == "active"
+        settings.active = tenant.status not in {"paused", "archived"}
         db.flush()
         return _tenant_summary(tenant)
 
 
-def add_tenant_phone_number(tenant_id: int, twilio_number: str, label: str = "", active: bool = True) -> dict:
+def add_tenant_phone_number(
+    tenant_id: int,
+    twilio_number: str,
+    label: str = "",
+    active: bool = True,
+    accepts_live_calls: bool = False,
+    purpose: str = "",
+) -> dict:
     with session_scope() as db:
         existing = db.query(TenantPhoneNumber).filter(TenantPhoneNumber.twilio_number == twilio_number).one_or_none()
         if existing is not None:
             existing.tenant_id = tenant_id
             existing.label = label.strip() or existing.label
             existing.active = active
+            existing.accepts_live_calls = accepts_live_calls
+            existing.purpose = purpose.strip() or existing.purpose
             db.flush()
             return _tenant_phone_summary(existing)
         phone = TenantPhoneNumber(
@@ -406,6 +550,8 @@ def add_tenant_phone_number(tenant_id: int, twilio_number: str, label: str = "",
             twilio_number=twilio_number.strip(),
             label=label.strip() or None,
             active=active,
+            accepts_live_calls=accepts_live_calls,
+            purpose=purpose.strip() or None,
         )
         db.add(phone)
         db.flush()

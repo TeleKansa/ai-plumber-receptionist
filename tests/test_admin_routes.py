@@ -72,6 +72,9 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(detail_response.status_code, 200)
         self.assertIn("Back to tenants", detail_response.text)
         self.assertIn("Tenant Summary", detail_response.text)
+        self.assertIn("Onboarding / Telephony", detail_response.text)
+        self.assertIn("Customer keeps their Google Maps number.", detail_response.text)
+        self.assertIn("Live calls are blocked until Go Live is enabled", detail_response.text)
         self.assertIn("Phone Numbers", detail_response.text)
         self.assertIn("Prompt/persona settings", detail_response.text)
 
@@ -109,6 +112,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(detail_response.status_code, 200)
         self.assertIn("Back to tenants", detail_response.text)
         self.assertIn("Prompt/persona settings", detail_response.text)
+        self.assertIn("Onboarding / Telephony", detail_response.text)
 
         prompt_response = self.client.get(f"/admin/tenants/{tenant_id}/prompt", auth=("admin", "secret"))
         self.assertEqual(prompt_response.status_code, 200)
@@ -116,6 +120,68 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("Back to tenant detail", prompt_response.text)
         self.assertIn("Back to tenants", prompt_response.text)
         self.assertIn("New Tenant Plumbing, what&#x27;s going on?", prompt_response.text)
+
+    def test_admin_can_update_telephony_status_test_callers_and_phone_live_switch(self):
+        tenant = repository.create_tenant(
+            "Admin Onboarding Plumbing",
+            "admin-onboarding-plumbing",
+            "Admin Onboarding Plumbing",
+            "Admin Onboarding Plumbing, what's going on?",
+            "+15550002222",
+        )
+        phone = repository.add_tenant_phone_number(tenant["id"], "+15551112222", "AI forwarding")
+
+        telephony_response = self.client.post(
+            f"/admin/tenants/{tenant['id']}/telephony",
+            data={
+                "status": "testing",
+                "public_business_number": "+19135550000",
+                "ai_ingress_twilio_number": "+15551112222",
+                "forwarding_setup_status": "customer_configured",
+                "test_mode_enabled": "1",
+                "allowed_test_callers": "+19135550123\n913-555-9999",
+                "notes": "Customer configured after-hours forwarding.",
+            },
+            auth=("admin", "secret"),
+            follow_redirects=False,
+        )
+        self.assertEqual(telephony_response.status_code, 303)
+
+        updated_tenant = repository.get_tenant(tenant["id"])
+        telephony_profile = repository.get_telephony_profile(tenant["id"])
+        self.assertEqual(updated_tenant["status"], "testing")
+        self.assertEqual(telephony_profile["public_business_number"], "+19135550000")
+        self.assertEqual(telephony_profile["ai_ingress_twilio_number"], "+15551112222")
+        self.assertEqual(telephony_profile["forwarding_setup_status"], "customer_configured")
+        self.assertTrue(telephony_profile["test_mode_enabled"])
+        self.assertIn("+19135550123", telephony_profile["allowed_test_callers_json"])
+
+        phone_response = self.client.post(
+            f"/admin/tenants/{tenant['id']}/phones/{phone['id']}/live",
+            data={"accepts_live_calls": "1"},
+            auth=("admin", "secret"),
+            follow_redirects=False,
+        )
+        self.assertEqual(phone_response.status_code, 303)
+        phone_after = repository.list_tenant_phone_numbers(tenant["id"])[0]
+        self.assertTrue(phone_after["accepts_live_calls"])
+
+        go_live_response = self.client.post(
+            f"/admin/tenants/{tenant['id']}/go-live",
+            auth=("admin", "secret"),
+            follow_redirects=False,
+        )
+        self.assertEqual(go_live_response.status_code, 303)
+        self.assertEqual(repository.get_tenant(tenant["id"])["status"], "live")
+        self.assertIsNotNone(repository.get_telephony_profile(tenant["id"])["live_enabled_at"])
+
+        pause_response = self.client.post(
+            f"/admin/tenants/{tenant['id']}/pause",
+            auth=("admin", "secret"),
+            follow_redirects=False,
+        )
+        self.assertEqual(pause_response.status_code, 303)
+        self.assertEqual(repository.get_tenant(tenant["id"])["status"], "paused")
 
     def test_prompt_page_renders_preview_and_can_activate_previous_version(self):
         tenant = repository.get_default_tenant()

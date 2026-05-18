@@ -135,6 +135,39 @@ async def media_stream_probe():
 # Twilio webhook
 # ---------------------------------------------------------------------------
 
+def _allowed_test_callers(profile: Optional[dict]) -> set[str]:
+    if not profile:
+        return set()
+    raw_callers = profile.get("allowed_test_callers_json") or "[]"
+    try:
+        parsed = json.loads(raw_callers)
+    except json.JSONDecodeError:
+        parsed = []
+    if not isinstance(parsed, list):
+        return set()
+    return {repository.normalize_phone_number(str(value)) for value in parsed if str(value).strip()}
+
+
+def _telephony_gate(tenant: dict, tenant_phone: dict, profile: Optional[dict], from_number: str) -> tuple[bool, str, str]:
+    tenant_status = tenant.get("status") or "onboarding"
+    if tenant_status == "live":
+        if tenant_phone.get("accepts_live_calls"):
+            return True, "allowed", "Tenant is live and this AI forwarding number accepts live calls."
+        return False, "not_live", "Tenant is live, but this AI forwarding number is not enabled for live calls."
+    if tenant_status == "testing":
+        if not profile or not profile.get("test_mode_enabled"):
+            return False, "test_mode_disabled", "Tenant is in testing, but test mode is not enabled."
+        normalized_from = repository.normalize_phone_number(from_number)
+        if normalized_from and normalized_from in _allowed_test_callers(profile):
+            return True, "allowed_test_caller", "Tenant is in testing and caller is allowed."
+        return False, "test_caller_not_allowed", "Tenant is in testing, but this caller is not on the allowed test callers list."
+    if tenant_status == "paused":
+        return False, "paused", "Tenant is paused."
+    if tenant_status in {"draft", "onboarding"}:
+        return False, "onboarding_blocked", "Tenant is not live yet."
+    return False, "not_live", f"Tenant status is {tenant_status}, so calls are not accepted."
+
+
 @app.post("/voice")
 async def voice(request: Request):
     form        = await request.form()
@@ -143,7 +176,7 @@ async def voice(request: Request):
     to_number   = form.get("To",      "unknown")
     log.info(f"[{call_sid}] Incoming call from {from_number}")
 
-    tenant, tenant_matched = repository.resolve_tenant_for_phone(to_number)
+    tenant, tenant_phone, tenant_matched = repository.resolve_tenant_phone_for_number(to_number)
     if not tenant_matched or tenant is None:
         log.warning(f"[{call_sid}] Tenant lookup failed for Twilio To={to_number}; rejecting call")
         repository.create_or_update_call(
@@ -173,6 +206,42 @@ async def voice(request: Request):
         )
         return Response(content=twiml, media_type="application/xml")
 
+    telephony_profile = repository.get_telephony_profile(tenant["id"])
+    allowed, gate_status, gate_reason = _telephony_gate(tenant, tenant_phone, telephony_profile, from_number)
+    if not allowed:
+        log.warning(f"[{call_sid}] Call blocked before media stream: {gate_status} ({gate_reason})")
+        repository.create_or_update_call(
+            call_sid,
+            from_number,
+            to_number,
+            tenant_id=tenant["id"],
+            status=gate_status,
+        )
+        repository.record_call_event(
+            call_sid,
+            "call_blocked",
+            {
+                "reason": gate_status,
+                "message": gate_reason,
+                "tenant_id": tenant["id"],
+                "tenant_status": tenant.get("status"),
+                "tenant_phone_id": tenant_phone.get("id") if tenant_phone else None,
+                "accepts_live_calls": tenant_phone.get("accepts_live_calls") if tenant_phone else None,
+                "from_number": from_number,
+                "normalized_from_number": repository.normalize_phone_number(from_number),
+                "to_number": to_number,
+                "normalized_to_number": repository.normalize_phone_number(to_number),
+            },
+            tenant_id=tenant["id"],
+        )
+        twiml = (
+            "<Response>"
+            "<Say>Sorry, this line is not active yet.</Say>"
+            "<Hangup/>"
+            "</Response>"
+        )
+        return Response(content=twiml, media_type="application/xml")
+
     prompt_profile = repository.get_active_prompt_profile(tenant["id"])
     repository.create_or_update_call(
         call_sid,
@@ -188,6 +257,7 @@ async def voice(request: Request):
             "from_number": from_number,
             "to_number": to_number,
             "tenant_id": tenant["id"],
+            "tenant_phone_id": tenant_phone.get("id") if tenant_phone else None,
             "prompt_version_id": prompt_profile["id"] if prompt_profile else None,
         },
     )
@@ -197,6 +267,8 @@ async def voice(request: Request):
         "to_number": to_number,
         "tenant_id": tenant["id"],
         "tenant": tenant,
+        "tenant_phone": tenant_phone,
+        "telephony_profile": telephony_profile,
         "prompt_profile": prompt_profile,
         "prompt_version_id": prompt_profile["id"] if prompt_profile else None,
         "complete": False,

@@ -88,6 +88,11 @@ def _input(name: str, value: str = "", placeholder: str = "") -> str:
     )
 
 
+def _checkbox(name: str, checked: bool = False) -> str:
+    checked_attr = " checked" if checked else ""
+    return f'<label><input type="checkbox" name="{escape(name)}" value="1"{checked_attr}> {escape(name)}</label>'
+
+
 def _textarea(name: str, value: str = "", rows: int = 2) -> str:
     return (
         f'<label>{escape(name)}<br>'
@@ -109,6 +114,36 @@ def _lines_from_json(value: str) -> str:
 
 def _lines_to_list(value: str) -> list[str]:
     return [line.strip() for line in value.replace("\r", "\n").split("\n") if line.strip()]
+
+
+def _phone_live_table(tenant_id: int, phones: list[dict]) -> str:
+    if not phones:
+        return "<p>No phone numbers yet.</p>"
+    rows = []
+    for phone in phones:
+        checked = " checked" if phone.get("accepts_live_calls") else ""
+        rows.append(
+            "<tr>"
+            f"<td>{escape(str(phone.get('id') or ''))}</td>"
+            f"<td>{escape(phone.get('twilio_number') or '')}</td>"
+            f"<td>{escape(phone.get('label') or '')}</td>"
+            f"<td>{escape(phone.get('purpose') or '')}</td>"
+            f"<td>{escape('yes' if phone.get('active') else 'no')}</td>"
+            "<td>"
+            f'<form method="post" action="/admin/tenants/{tenant_id}/phones/{phone["id"]}/live">'
+            f'<label><input type="checkbox" name="accepts_live_calls" value="1"{checked}> accepts live calls</label> '
+            '<button type="submit">Save</button>'
+            "</form>"
+            "</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr>"
+        "<th>id</th><th>twilio_number</th><th>label</th><th>purpose</th><th>active</th><th>live switch</th>"
+        "</tr></thead><tbody>"
+        f"{''.join(rows)}"
+        "</tbody></table>"
+    )
 
 
 def _prompt_history_table(tenant_id: int, profiles: list[dict]) -> str:
@@ -186,6 +221,10 @@ def _parse_tenant_id(value: str) -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return tenant_id if tenant_id > 0 else None
+
+
+def _parse_form_bool(value) -> bool:
+    return str(value or "").lower() in {"1", "true", "yes", "on"}
 
 
 def create_admin_router(settings: Settings) -> APIRouter:
@@ -272,6 +311,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
         if not tenant:
             return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
         phones = repository.list_tenant_phone_numbers(tenant_id)
+        telephony_profile = repository.get_telephony_profile(tenant_id)
         calls = repository.list_recent_calls(tenant_id=tenant_id)
         leads = repository.list_recent_leads(tenant_id=tenant_id)
         notifications = repository.list_recent_notifications(tenant_id=tenant_id)
@@ -285,8 +325,13 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "business_name": tenant.get("business_name") or "",
                 "notification_sms_number": tenant.get("notification_sms_number") or "",
                 "backup_notification_sms_number": tenant.get("backup_notification_sms_number") or "",
+                "public_business_number": telephony_profile.get("public_business_number") if telephony_profile else "",
+                "ai_ingress_twilio_number": telephony_profile.get("ai_ingress_twilio_number") if telephony_profile else "",
+                "forwarding_setup_status": telephony_profile.get("forwarding_setup_status") if telephony_profile else "",
+                "test_mode_enabled": telephony_profile.get("test_mode_enabled") if telephony_profile else False,
             }
         ]
+        allowed_test_callers = _lines_from_json(telephony_profile.get("allowed_test_callers_json") if telephony_profile else "")
         body = "\n".join(
             [
                 f"<h2>{escape(tenant['name'])}</h2>",
@@ -297,6 +342,31 @@ def create_admin_router(settings: Settings) -> APIRouter:
                     tenant_summary,
                     ["id", "name", "slug", "status", "business_name", "notification_sms_number", "backup_notification_sms_number"],
                 ),
+                "<h3>Onboarding / Telephony</h3>",
+                "<p>Customer keeps their Google Maps number. They forward missed/after-hours calls to this AI forwarding number. Live calls are blocked until Go Live is enabled and the phone live switch is on.</p>",
+                _render_table(
+                    tenant_summary,
+                    ["status", "public_business_number", "ai_ingress_twilio_number", "forwarding_setup_status", "test_mode_enabled"],
+                ),
+                f'<form method="post" action="/admin/tenants/{tenant_id}/telephony">',
+                _input("status", tenant.get("status") or "onboarding", "draft/onboarding/testing/live/paused/archived"),
+                "<br><br>",
+                _input("public_business_number", telephony_profile.get("public_business_number") if telephony_profile else "", "+15551234567"),
+                "<br><br>",
+                _input("ai_ingress_twilio_number", telephony_profile.get("ai_ingress_twilio_number") if telephony_profile else "", "+15557654321"),
+                "<br><br>",
+                _input("forwarding_setup_status", telephony_profile.get("forwarding_setup_status") if telephony_profile else "not_started", "not_started/instructions_sent/customer_configured/verified"),
+                "<br><br>",
+                _checkbox("test_mode_enabled", bool(telephony_profile.get("test_mode_enabled") if telephony_profile else False)),
+                "<br><br>",
+                _textarea("allowed_test_callers", allowed_test_callers, rows=4),
+                "<br><br>",
+                _textarea("notes", telephony_profile.get("notes") if telephony_profile else "", rows=4),
+                "<br><br>",
+                "<button type=\"submit\">Save Onboarding / Telephony</button>",
+                "</form>",
+                f'<form method="post" action="/admin/tenants/{tenant_id}/go-live" style="display:inline; margin-right: 12px;"><button type="submit">Go Live</button></form>',
+                f'<form method="post" action="/admin/tenants/{tenant_id}/pause" style="display:inline;"><button type="submit">Pause</button></form>',
                 "<h3>Settings</h3>",
                 f'<form method="post" action="/admin/tenants/{tenant_id}/settings">',
                 _input("business_name", tenant.get("business_name") or tenant.get("name") or ""),
@@ -312,11 +382,13 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<button type=\"submit\">Save Settings</button>",
                 "</form>",
                 "<h3>Phone Numbers</h3>",
-                _render_table(phones, ["id", "tenant_id", "twilio_number", "label", "active", "created_at"]),
+                _phone_live_table(tenant_id, phones),
                 f'<form method="post" action="/admin/tenants/{tenant_id}/phones">',
                 _input("twilio_number", placeholder="+15551234567"),
                 "<br><br>",
                 _input("label", placeholder="Main line"),
+                "<br><br>",
+                _input("purpose", "ai_forwarding", "ai_forwarding"),
                 "<br><br>",
                 "<button type=\"submit\">Add Phone Number</button>",
                 "</form>",
@@ -409,6 +481,49 @@ def create_admin_router(settings: Settings) -> APIRouter:
             return _admin_not_found("Prompt Version Not Found", f"Prompt version {profile_id} was not found for tenant {tenant_id}.")
         return RedirectResponse(f"/admin/tenants/{tenant_id}/prompt", status_code=303)
 
+    @router.post("/admin/tenants/{tenant_id}/telephony")
+    async def admin_update_telephony(tenant_id: int, request: Request):
+        form = await request.form()
+        tenant = repository.set_tenant_status(tenant_id, str(form.get("status", "onboarding")).strip())
+        if not tenant:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        repository.update_telephony_profile(
+            tenant_id,
+            public_business_number=str(form.get("public_business_number", "")).strip(),
+            ai_ingress_twilio_number=str(form.get("ai_ingress_twilio_number", "")).strip(),
+            forwarding_setup_status=str(form.get("forwarding_setup_status", "not_started")).strip(),
+            test_mode_enabled=_parse_form_bool(form.get("test_mode_enabled")),
+            allowed_test_callers=_lines_to_list(str(form.get("allowed_test_callers", ""))),
+            notes=str(form.get("notes", "")).strip(),
+        )
+        return RedirectResponse(f"/admin/tenants/{tenant_id}", status_code=303)
+
+    @router.post("/admin/tenants/{tenant_id}/go-live")
+    async def admin_go_live(tenant_id: int):
+        tenant = repository.set_tenant_live(tenant_id)
+        if not tenant:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        return RedirectResponse(f"/admin/tenants/{tenant_id}", status_code=303)
+
+    @router.post("/admin/tenants/{tenant_id}/pause")
+    async def admin_pause_tenant(tenant_id: int):
+        tenant = repository.set_tenant_paused(tenant_id)
+        if not tenant:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        return RedirectResponse(f"/admin/tenants/{tenant_id}", status_code=303)
+
+    @router.post("/admin/tenants/{tenant_id}/phones/{phone_id}/live")
+    async def admin_set_phone_live(tenant_id: int, phone_id: int, request: Request):
+        form = await request.form()
+        phone = repository.set_tenant_phone_live(
+            tenant_id,
+            phone_id,
+            accepts_live_calls=_parse_form_bool(form.get("accepts_live_calls")),
+        )
+        if not phone:
+            return _admin_not_found("Phone Not Found", f"Phone {phone_id} was not found for tenant {tenant_id}.")
+        return RedirectResponse(f"/admin/tenants/{tenant_id}", status_code=303)
+
     @router.post("/admin/tenants/{tenant_id}/settings")
     async def admin_update_tenant_settings(tenant_id: int, request: Request):
         form = await request.form()
@@ -435,6 +550,8 @@ def create_admin_router(settings: Settings) -> APIRouter:
             twilio_number=twilio_number,
             label=str(form.get("label", "")).strip(),
             active=True,
+            accepts_live_calls=False,
+            purpose=str(form.get("purpose", "")).strip(),
         )
         return RedirectResponse(f"/admin/tenants/{tenant_id}", status_code=303)
 
