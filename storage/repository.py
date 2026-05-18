@@ -11,11 +11,13 @@ from storage.models import (
     Notification,
     Tenant,
     TenantAIProfile,
+    TenantIntakePolicy,
     TenantPhoneNumber,
     TenantSettings,
     TenantTelephonyProfile,
     utcnow,
 )
+from workflow.intake_policy import default_intake_policy
 from workflow.prompt_builder import prompt_profile_defaults
 
 
@@ -77,6 +79,21 @@ def _telephony_profile_summary(profile: TenantTelephonyProfile) -> dict:
     }
 
 
+def _intake_policy_summary(policy: TenantIntakePolicy) -> dict:
+    return {
+        "id": policy.id,
+        "tenant_id": policy.tenant_id,
+        "enabled": policy.enabled,
+        "extra_questions_json": policy.extra_questions_json,
+        "conditional_questions_json": policy.conditional_questions_json,
+        "sms_include_extra_fields_json": policy.sms_include_extra_fields_json,
+        "admin_display_fields_json": policy.admin_display_fields_json,
+        "notes": policy.notes,
+        "created_at": policy.created_at,
+        "updated_at": policy.updated_at,
+    }
+
+
 def _prompt_profile_summary(profile: TenantAIProfile) -> dict:
     return {
         "id": profile.id,
@@ -113,6 +130,10 @@ def _call_summary(call: Call) -> dict:
 
 
 def _lead_summary(lead: Lead) -> dict:
+    try:
+        extra_fields = json.loads(lead.extra_fields_json or "{}")
+    except json.JSONDecodeError:
+        extra_fields = {}
     return {
         "id": lead.id,
         "tenant_id": lead.tenant_id,
@@ -123,6 +144,8 @@ def _lead_summary(lead: Lead) -> dict:
         "address": lead.address,
         "issue": lead.issue,
         "urgency": lead.urgency,
+        "extra_fields": extra_fields if isinstance(extra_fields, dict) else {},
+        "extra_fields_json": lead.extra_fields_json,
         "raw_args_json": lead.raw_args_json,
         "status": lead.status,
         "created_at": lead.created_at,
@@ -227,10 +250,32 @@ def _create_default_telephony_profile(db, tenant: Tenant) -> TenantTelephonyProf
     return profile
 
 
+def _create_default_intake_policy(db, tenant: Tenant) -> TenantIntakePolicy:
+    defaults = default_intake_policy()
+    policy = TenantIntakePolicy(
+        tenant_id=tenant.id,
+        enabled=defaults["enabled"],
+        extra_questions_json=defaults["extra_questions_json"],
+        conditional_questions_json=defaults["conditional_questions_json"],
+        sms_include_extra_fields_json=defaults["sms_include_extra_fields_json"],
+        admin_display_fields_json=defaults["admin_display_fields_json"],
+        notes=defaults["notes"],
+    )
+    db.add(policy)
+    db.flush()
+    return policy
+
+
 def _get_or_create_telephony_profile(db, tenant: Tenant) -> TenantTelephonyProfile:
     if tenant.telephony_profile:
         return tenant.telephony_profile
     return _create_default_telephony_profile(db, tenant)
+
+
+def _get_or_create_intake_policy(db, tenant: Tenant) -> TenantIntakePolicy:
+    if tenant.intake_policy:
+        return tenant.intake_policy
+    return _create_default_intake_policy(db, tenant)
 
 
 def get_telephony_profile(tenant_id: int) -> Optional[dict]:
@@ -239,6 +284,39 @@ def get_telephony_profile(tenant_id: int) -> Optional[dict]:
         if tenant is None:
             return None
         return _telephony_profile_summary(_get_or_create_telephony_profile(db, tenant))
+
+
+def get_intake_policy(tenant_id: int) -> Optional[dict]:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+        if tenant is None:
+            return None
+        return _intake_policy_summary(_get_or_create_intake_policy(db, tenant))
+
+
+def update_intake_policy(
+    tenant_id: int,
+    enabled: bool = True,
+    extra_questions: Optional[list[dict]] = None,
+    conditional_questions: Optional[list[dict]] = None,
+    sms_include_extra_fields: Optional[list[str]] = None,
+    admin_display_fields: Optional[list[str]] = None,
+    notes: str = "",
+) -> Optional[dict]:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+        if tenant is None:
+            return None
+        policy = _get_or_create_intake_policy(db, tenant)
+        policy.enabled = bool(enabled)
+        policy.extra_questions_json = json.dumps(extra_questions or [])
+        policy.conditional_questions_json = json.dumps(conditional_questions or [])
+        policy.sms_include_extra_fields_json = json.dumps(sms_include_extra_fields or [])
+        policy.admin_display_fields_json = json.dumps(admin_display_fields or [])
+        policy.notes = notes.strip()
+        policy.updated_at = utcnow()
+        db.flush()
+        return _intake_policy_summary(policy)
 
 
 def update_telephony_profile(
@@ -501,6 +579,7 @@ def create_tenant(name: str, slug: str, business_name: str, greeting: str, notif
         db.add(settings)
         db.flush()
         _create_default_telephony_profile(db, tenant)
+        _create_default_intake_policy(db, tenant)
         _create_default_prompt_profile(db, tenant)
         return _tenant_summary(tenant)
 
@@ -712,6 +791,7 @@ def create_lead_with_pending_notification(call_sid: str, args: dict, to_number: 
             address=str(args.get("address", "")).strip(),
             issue=str(args.get("issue", "")).strip(),
             urgency=str(args.get("urgency", "")).strip(),
+            extra_fields_json=json.dumps(args.get("extra_fields") or {}, default=str),
             raw_args_json=raw_args_json,
             status="submitted",
         )

@@ -68,6 +68,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("Default Plumbing", tenants_response.text)
         self.assertIn(f'href="/admin/tenants/{tenant["id"]}"', tenants_response.text)
         self.assertIn(f'href="/admin/tenants/{tenant["id"]}/prompt"', tenants_response.text)
+        self.assertIn(f'href="/admin/tenants/{tenant["id"]}/intake-policy"', tenants_response.text)
         self.assertIn("Details", tenants_response.text)
         self.assertEqual(detail_response.status_code, 200)
         self.assertIn("Back to tenants", detail_response.text)
@@ -77,6 +78,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("Live calls are blocked until Go Live is enabled", detail_response.text)
         self.assertIn("Phone Numbers", detail_response.text)
         self.assertIn("Prompt/persona settings", detail_response.text)
+        self.assertIn("Intake policy", detail_response.text)
 
     def test_newly_created_tenant_is_clickable_and_has_prompt_profile(self):
         create_response = self.client.post(
@@ -107,11 +109,13 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("New Tenant Plumbing", tenants_response.text)
         self.assertIn(f'href="/admin/tenants/{tenant_id}"', tenants_response.text)
         self.assertIn(f'href="/admin/tenants/{tenant_id}/prompt"', tenants_response.text)
+        self.assertIn(f'href="/admin/tenants/{tenant_id}/intake-policy"', tenants_response.text)
 
         detail_response = self.client.get(detail_path, auth=("admin", "secret"))
         self.assertEqual(detail_response.status_code, 200)
         self.assertIn("Back to tenants", detail_response.text)
         self.assertIn("Prompt/persona settings", detail_response.text)
+        self.assertIn("Intake policy", detail_response.text)
         self.assertIn("Onboarding / Telephony", detail_response.text)
 
         prompt_response = self.client.get(f"/admin/tenants/{tenant_id}/prompt", auth=("admin", "secret"))
@@ -120,6 +124,16 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("Back to tenant detail", prompt_response.text)
         self.assertIn("Back to tenants", prompt_response.text)
         self.assertIn("New Tenant Plumbing, what&#x27;s going on?", prompt_response.text)
+
+        intake_policy = repository.get_intake_policy(tenant_id)
+        self.assertIsNotNone(intake_policy)
+        self.assertTrue(intake_policy["enabled"])
+
+        intake_response = self.client.get(f"/admin/tenants/{tenant_id}/intake-policy", auth=("admin", "secret"))
+        self.assertEqual(intake_response.status_code, 200)
+        self.assertIn("Generated Prompt Preview", intake_response.text)
+        self.assertIn("Core workflow is locked", intake_response.text)
+        self.assertIn("Add Extra Question", intake_response.text)
 
     def test_admin_can_update_telephony_status_test_callers_and_phone_live_switch(self):
         tenant = repository.create_tenant(
@@ -194,6 +208,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("Core workflow is locked", prompt_response.text)
         self.assertIn("Generated Prompt Preview", prompt_response.text)
         self.assertIn("First name is enough", prompt_response.text)
+        self.assertIn("Intake policy", prompt_response.text)
 
         create_response = self.client.post(
             f"/admin/tenants/{tenant['id']}/prompt",
@@ -223,6 +238,55 @@ class AdminRoutesTests(unittest.TestCase):
         )
         self.assertEqual(activate_response.status_code, 303)
         self.assertEqual(repository.get_active_prompt_profile(tenant["id"])["id"], original["id"])
+
+    def test_intake_policy_page_renders_and_can_add_question(self):
+        tenant = repository.get_default_tenant()
+
+        response = self.client.get(f"/admin/tenants/{tenant['id']}/intake-policy", auth=("admin", "secret"))
+        self.assertEqual(response.status_code, 200)
+        self.assertIn("TENANT INTAKE POLICY", response.text)
+        self.assertIn("Add Extra Question", response.text)
+        self.assertIn("Prompt/persona settings", response.text)
+
+        add_response = self.client.post(
+            f"/admin/tenants/{tenant['id']}/intake-policy/extra",
+            data={
+                "key": "property_role",
+                "label": "Homeowner or renter",
+                "question_text": "Are you the homeowner or are you renting?",
+                "include_in_sms": "1",
+                "include_in_admin": "1",
+                "active": "1",
+            },
+            auth=("admin", "secret"),
+            follow_redirects=False,
+        )
+
+        self.assertEqual(add_response.status_code, 303)
+        policy = repository.get_intake_policy(tenant["id"])
+        self.assertIn("property_role", policy["extra_questions_json"])
+        updated_response = self.client.get(f"/admin/tenants/{tenant['id']}/intake-policy", auth=("admin", "secret"))
+        self.assertIn("Homeowner or renter", updated_response.text)
+
+    def test_intake_policy_page_rejects_invalid_json_cleanly(self):
+        tenant = repository.get_default_tenant()
+
+        response = self.client.post(
+            f"/admin/tenants/{tenant['id']}/intake-policy",
+            data={
+                "enabled": "1",
+                "extra_questions_json": "not-json",
+                "conditional_questions_json": "[]",
+                "sms_include_extra_fields": "",
+                "admin_display_fields": "",
+                "notes": "",
+            },
+            auth=("admin", "secret"),
+        )
+
+        self.assertEqual(response.status_code, 400)
+        self.assertIn("Invalid Intake Policy JSON", response.text)
+        self.assertNotIn("Traceback", response.text)
 
     def test_invalid_tenant_pages_show_clean_admin_error(self):
         detail_response = self.client.get("/admin/tenants/999999", auth=("admin", "secret"))

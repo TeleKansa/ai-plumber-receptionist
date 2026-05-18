@@ -53,6 +53,9 @@ def add_missing_tenant_columns(engine):
             conn.execute(text("ALTER TABLE tenant_phone_numbers ADD COLUMN accepts_live_calls BOOLEAN DEFAULT FALSE"))
         if phone_columns and "purpose" not in phone_columns:
             conn.execute(text("ALTER TABLE tenant_phone_numbers ADD COLUMN purpose VARCHAR(64)"))
+        lead_columns = _columns_for(engine, "leads")
+        if lead_columns and "extra_fields_json" not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN extra_fields_json TEXT"))
 
 
 def _scalar(conn, sql: str, params: dict):
@@ -302,9 +305,44 @@ def ensure_default_telephony_profiles(engine, default_tenant_id, settings):
                 )
 
 
+def ensure_default_intake_policies(engine):
+    now = datetime.now(timezone.utc)
+    with engine.begin() as conn:
+        tenants = conn.execute(text("SELECT id FROM tenants")).mappings().all()
+        for tenant in tenants:
+            policy_id = _scalar(
+                conn,
+                "SELECT id FROM tenant_intake_policies WHERE tenant_id = :tenant_id",
+                {"tenant_id": tenant["id"]},
+            )
+            if policy_id is not None:
+                continue
+            conn.execute(
+                text(
+                    "INSERT INTO tenant_intake_policies "
+                    "(tenant_id, enabled, extra_questions_json, conditional_questions_json, "
+                    "sms_include_extra_fields_json, admin_display_fields_json, notes, created_at, updated_at) "
+                    "VALUES (:tenant_id, :enabled, :extra_questions_json, :conditional_questions_json, "
+                    ":sms_include_extra_fields_json, :admin_display_fields_json, :notes, :created_at, :updated_at)"
+                ),
+                {
+                    "tenant_id": tenant["id"],
+                    "enabled": True,
+                    "extra_questions_json": "[]",
+                    "conditional_questions_json": "[]",
+                    "sms_include_extra_fields_json": "[]",
+                    "admin_display_fields_json": "[]",
+                    "notes": "",
+                    "created_at": now,
+                    "updated_at": now,
+                },
+            )
+
+
 def run_schema_migrations(engine, settings):
     add_missing_tenant_columns(engine)
     default_tenant_id = ensure_default_tenant(engine, settings)
     ensure_default_telephony_profiles(engine, default_tenant_id, settings)
     ensure_default_prompt_profiles(engine)
+    ensure_default_intake_policies(engine)
     return default_tenant_id

@@ -43,6 +43,7 @@ class Lead(Base):
     address = Column(Text, nullable=False)
     issue = Column(Text, nullable=False)
     urgency = Column(Text, nullable=False)
+    extra_fields_json = Column(Text, nullable=True)
     raw_args_json = Column(Text, nullable=False)
     status = Column(String(64), nullable=False, default="submitted")
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
@@ -99,6 +100,7 @@ class Tenant(Base):
     phone_numbers = relationship("TenantPhoneNumber", back_populates="tenant")
     settings = relationship("TenantSettings", back_populates="tenant", uselist=False)
     telephony_profile = relationship("TenantTelephonyProfile", back_populates="tenant", uselist=False)
+    intake_policy = relationship("TenantIntakePolicy", back_populates="tenant", uselist=False)
     ai_profiles = relationship("TenantAIProfile", back_populates="tenant")
     calls = relationship("Call", back_populates="tenant")
     leads = relationship("Lead", back_populates="tenant")
@@ -136,6 +138,23 @@ class TenantTelephonyProfile(Base):
     notes = Column(Text, nullable=False, default="")
 
     tenant = relationship("Tenant", back_populates="telephony_profile")
+
+
+class TenantIntakePolicy(Base):
+    __tablename__ = "tenant_intake_policies"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), unique=True, nullable=False, index=True)
+    enabled = Column(Boolean, nullable=False, default=True)
+    extra_questions_json = Column(Text, nullable=False, default="[]")
+    conditional_questions_json = Column(Text, nullable=False, default="[]")
+    sms_include_extra_fields_json = Column(Text, nullable=False, default="[]")
+    admin_display_fields_json = Column(Text, nullable=False, default="[]")
+    notes = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    tenant = relationship("Tenant", back_populates="intake_policy")
 
 
 class TenantSettings(Base):

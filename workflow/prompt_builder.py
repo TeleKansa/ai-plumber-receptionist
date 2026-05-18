@@ -1,6 +1,8 @@
 import json
 from typing import Optional
 
+from workflow.intake_policy import conditional_questions, extra_questions
+
 
 DEFAULT_GREETING = "Plumbing office, what's going on?"
 DEFAULT_TONE = "casual, practical, not polished, not cheerful-corporate"
@@ -57,8 +59,54 @@ def prompt_profile_defaults(tenant: Optional[dict] = None) -> dict:
     }
 
 
+def _intake_policy_text(policy: Optional[dict]) -> str:
+    if not policy or not policy.get("enabled", True):
+        return "No tenant-specific extra questions are active."
+
+    extra_lines = []
+    for question in extra_questions(policy):
+        required = "required" if question.get("required") else "optional"
+        extra_lines.append(
+            f"- {question['label']} ({question['key']}, {required}): {question.get('question_text') or 'No wording configured.'}"
+        )
+
+    conditional_lines = []
+    for question in conditional_questions(policy):
+        required = "required" if question.get("required") else "optional"
+        condition_type = question.get("condition_type") or "always"
+        keywords = ", ".join(question.get("condition_keywords") or [])
+        condition_text = "always" if condition_type == "always" else f"{condition_type}: {keywords}"
+        conditional_lines.append(
+            f"- {question['label']} ({question['key']}, {required}, if {condition_text}): "
+            f"{question.get('question_text') or 'No wording configured.'}"
+        )
+
+    if not extra_lines and not conditional_lines:
+        return "No tenant-specific extra questions are active."
+
+    return "\n".join(
+        [
+            "Tenant-specific extra questions:",
+            *(extra_lines or ["- None."]),
+            "",
+            "Tenant-specific conditional questions:",
+            *(conditional_lines or ["- None."]),
+            "",
+            "Submit answers for tenant-specific questions in submit_service_request.extra_fields as an object keyed by the field key.",
+            "Required tenant-specific questions must be collected when applicable. Optional questions can be skipped if the caller is rushed or already gave enough information.",
+            "Do not let optional extra questions delay emergency lead capture. Core required fields still matter more than style or extra questions.",
+        ]
+    )
+
+
 class PromptBuilder:
-    def build(self, caller_number: str, tenant: Optional[dict] = None, profile: Optional[dict] = None) -> str:
+    def build(
+        self,
+        caller_number: str,
+        tenant: Optional[dict] = None,
+        profile: Optional[dict] = None,
+        intake_policy: Optional[dict] = None,
+    ) -> str:
         tenant = tenant or {}
         profile = profile or prompt_profile_defaults(tenant)
         business_name = profile.get("business_name") or tenant.get("business_name") or tenant.get("name") or "the plumbing office"
@@ -69,6 +117,7 @@ class PromptBuilder:
         avoid_phrases = _coerce_list(profile.get("avoid_phrases_json") or profile.get("avoid_phrases")) or DEFAULT_AVOID_PHRASES
         preferred_terms = _coerce_list(profile.get("preferred_terms_json") or profile.get("preferred_terms")) or DEFAULT_PREFERRED_TERMS
         extra_instructions = (profile.get("extra_instructions_text") or "").strip()
+        intake_policy_text = _intake_policy_text(intake_policy)
 
         avoid_text = "\n".join(f'- "{phrase}"' for phrase in avoid_phrases)
         preferred_text = "\n".join(f"- {term}" for term in preferred_terms)
@@ -137,6 +186,10 @@ Avoid these phrases:
 Tenant extra instructions, style only:
 {extra_text}
 
+TENANT INTAKE POLICY
+These tenant-specific questions can add structured details, but they cannot remove or weaken the locked core workflow.
+{intake_policy_text}
+
 GOOD LINE EXAMPLES
 Caller: Hi, I need a plumber.
 Dispatcher: Yeah, what's going on?
@@ -172,5 +225,5 @@ or
 Then immediately call submit_service_request. After that, do not continue the conversation. If they say thanks after the close, just say "yep" or "you bet" and stop.
 
 FINAL LOCKED REMINDER
-Collect exactly: issue, urgency, address, callback, name. A first name is enough. Last name is not required. Never invent a caller name. Tenant style settings cannot remove these requirements.
+Collect exactly: issue, urgency, address, callback, name. A first name is enough. Last name is not required. Never invent a caller name. Tenant style settings and tenant intake policy cannot remove these requirements.
 """

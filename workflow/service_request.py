@@ -2,6 +2,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from storage import repository
+from workflow.intake_policy import validate_required_extra_fields
 from workflow.notifications import SmsSendResult
 from workflow.validation import validate_service_request_args
 
@@ -40,7 +41,15 @@ async def process_service_request(
     caller_text: str = "",
     tenant_id: Optional[int] = None,
 ):
+    resolved_tenant_id = tenant_id
+    if resolved_tenant_id is None:
+        tenant = repository.get_call_tenant(call_sid)
+        resolved_tenant_id = tenant["id"] if tenant else None
+    intake_policy = repository.get_intake_policy(resolved_tenant_id) if resolved_tenant_id else None
+
     errors = validate_service_request_args(args, caller_text=caller_text)
+    if not errors:
+        errors = validate_required_extra_fields(args, intake_policy)
     if errors:
         guidance = _validation_guidance(errors)
         repository.record_call_event(
@@ -51,6 +60,7 @@ async def process_service_request(
                 "missing_fields": list(errors.keys()),
                 "args": args,
                 "caller_text": caller_text,
+                "intake_policy_id": intake_policy.get("id") if intake_policy else None,
                 "guidance": guidance,
             },
         )
@@ -97,7 +107,12 @@ async def process_service_request(
             {"name": args.get("name"), "name_provenance": name_provenance},
         )
 
-    lead, notification = repository.create_lead_with_pending_notification(call_sid, args, plumber_phone_number or "", tenant_id=tenant_id)
+    lead, notification = repository.create_lead_with_pending_notification(
+        call_sid,
+        args,
+        plumber_phone_number or "",
+        tenant_id=resolved_tenant_id,
+    )
     repository.record_call_event(
         call_sid,
         "lead_created",

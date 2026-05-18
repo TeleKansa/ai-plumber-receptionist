@@ -43,6 +43,7 @@ class TenantTests(unittest.TestCase):
         phones = repository.list_tenant_phone_numbers(tenant["id"])
         active_prompt = repository.get_active_prompt_profile(tenant["id"])
         telephony_profile = repository.get_telephony_profile(tenant["id"])
+        intake_policy = repository.get_intake_policy(tenant["id"])
 
         self.assertEqual(tenant["name"], "Default Plumbing")
         self.assertEqual(tenant["status"], "live")
@@ -55,6 +56,9 @@ class TenantTests(unittest.TestCase):
         self.assertIsNotNone(active_prompt)
         self.assertEqual(active_prompt["version"], 1)
         self.assertTrue(active_prompt["is_active"])
+        self.assertIsNotNone(intake_policy)
+        self.assertTrue(intake_policy["enabled"])
+        self.assertEqual(intake_policy["extra_questions_json"], "[]")
 
     def test_new_tenant_defaults_to_onboarding_and_phone_not_live(self):
         init_db(tenant_settings(self.tmpdir.name))

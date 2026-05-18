@@ -10,6 +10,7 @@ from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from admin.auth import check_admin_credentials
 from config.settings import Settings
 from storage import repository
+from workflow.intake_policy import conditional_questions, extra_questions, policy_to_json
 from workflow.prompt_builder import PromptBuilder
 
 
@@ -54,6 +55,7 @@ def _tenant_actions_table(tenants: list[dict]) -> str:
         tenant_id = tenant["id"]
         detail_href = f"/admin/tenants/{tenant_id}"
         prompt_href = f"/admin/tenants/{tenant_id}/prompt"
+        intake_href = f"/admin/tenants/{tenant_id}/intake-policy"
         rows.append(
             "<tr>"
             f'<td><a href="{detail_href}">{escape(tenant.get("name") or "")}</a></td>'
@@ -64,12 +66,13 @@ def _tenant_actions_table(tenants: list[dict]) -> str:
             f"<td>{escape(tenant.get('notification_sms_number') or '')}</td>"
             f'<td><a href="{detail_href}">Details</a></td>'
             f'<td><a href="{prompt_href}">Prompt/persona settings</a></td>'
+            f'<td><a href="{intake_href}">Intake policy</a></td>'
             "</tr>"
         )
     return (
         "<table><thead><tr>"
         "<th>tenant</th><th>id</th><th>slug</th><th>status</th><th>business_name</th>"
-        "<th>notification_sms_number</th><th>details</th><th>prompt</th>"
+        "<th>notification_sms_number</th><th>details</th><th>prompt</th><th>intake</th>"
         "</tr></thead><tbody>"
         f"{''.join(rows)}"
         "</tbody></table>"
@@ -178,6 +181,35 @@ def _prompt_history_table(tenant_id: int, profiles: list[dict]) -> str:
     )
 
 
+def _question_table(questions: list[dict], conditional: bool = False) -> str:
+    if not questions:
+        return "<p>No questions configured.</p>"
+    columns = ["key", "label", "question_text", "required", "include_in_sms", "include_in_admin", "active"]
+    if conditional:
+        columns = ["key", "label", "condition_type", "condition_keywords", "question_text", "required", "include_in_sms", "active"]
+    rows = []
+    for question in questions:
+        cells = []
+        for column in columns:
+            value = question.get(column)
+            if isinstance(value, list):
+                value = ", ".join(str(item) for item in value)
+            elif isinstance(value, bool):
+                value = "yes" if value else "no"
+            cells.append(f"<td>{escape(str(value or ''))}</td>")
+        rows.append(f"<tr>{''.join(cells)}</tr>")
+    header = "".join(f"<th>{escape(column)}</th>" for column in columns)
+    return f"<table><thead><tr>{header}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
+
+
+def _json_list_from_text(value: str) -> Optional[list]:
+    try:
+        parsed = json.loads(value or "[]")
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, list) else None
+
+
 def _page(title: str, body: str, status_code: int = 200) -> HTMLResponse:
     html = f"""
 <!doctype html>
@@ -245,7 +277,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<h2>Recent Calls</h2>",
                 _render_table(calls, ["tenant_id", "prompt_version_id", "call_sid", "from_number", "to_number", "stream_sid", "status", "started_at", "ended_at"]),
                 "<h2>Recent Leads</h2>",
-                _render_table(leads, ["id", "tenant_id", "call_sid", "name", "callback", "address", "issue", "urgency", "status", "created_at"]),
+                _render_table(leads, ["id", "tenant_id", "call_sid", "name", "callback", "address", "issue", "urgency", "extra_fields", "status", "created_at"]),
                 "<h2>Recent Notifications</h2>",
                 _render_table(notifications, ["id", "tenant_id", "lead_id", "channel", "to_number", "status", "provider_message_sid", "error", "created_at", "sent_at"]),
                 "<h2>Recent Call Events</h2>",
@@ -336,7 +368,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
             [
                 f"<h2>{escape(tenant['name'])}</h2>",
                 '<p><a href="/admin/tenants">Back to tenants</a></p>',
-                f'<p><strong><a href="/admin/tenants/{tenant_id}/prompt">Prompt/persona settings</a></strong></p>',
+                f'<p><strong><a href="/admin/tenants/{tenant_id}/prompt">Prompt/persona settings</a></strong> | <strong><a href="/admin/tenants/{tenant_id}/intake-policy">Intake policy</a></strong></p>',
                 "<h3>Tenant Summary</h3>",
                 _render_table(
                     tenant_summary,
@@ -395,7 +427,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<h3>Recent Calls</h3>",
                 _render_table(calls, ["call_sid", "prompt_version_id", "from_number", "to_number", "status", "started_at", "ended_at"]),
                 "<h3>Recent Leads</h3>",
-                _render_table(leads, ["id", "call_sid", "name", "callback", "address", "issue", "urgency", "status", "created_at"]),
+                _render_table(leads, ["id", "call_sid", "name", "callback", "address", "issue", "urgency", "extra_fields", "status", "created_at"]),
                 "<h3>Recent Notifications</h3>",
                 _render_table(notifications, ["id", "lead_id", "channel", "to_number", "status", "error", "created_at", "sent_at"]),
                 "<h3>Recent Events</h3>",
@@ -403,6 +435,176 @@ def create_admin_router(settings: Settings) -> APIRouter:
             ]
         )
         return _page(f"Tenant {tenant_id}", body)
+
+    @router.get("/admin/tenants/{tenant_id}/intake-policy", response_class=HTMLResponse)
+    async def admin_tenant_intake_policy(tenant_id: str):
+        parsed_tenant_id = _parse_tenant_id(tenant_id)
+        if parsed_tenant_id is None:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        tenant_id = parsed_tenant_id
+        tenant = repository.get_tenant(tenant_id)
+        if not tenant:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        policy = repository.get_intake_policy(tenant_id)
+        active_profile = repository.get_active_prompt_profile(tenant_id)
+        preview = PromptBuilder().build("913-555-0123", tenant=tenant, profile=active_profile, intake_policy=policy)
+        body = "\n".join(
+            [
+                f"<h2>{escape(tenant['name'])} Intake Policy</h2>",
+                f'<p><a href="/admin/tenants/{tenant_id}">Back to tenant detail</a> | <a href="/admin/tenants/{tenant_id}/prompt">Prompt/persona settings</a> | <a href="/admin/tenants">Back to tenants</a></p>',
+                "<h3>Core workflow is locked</h3>",
+                "<p>Required core fields stay: issue, urgency, address, callback, name. First name is enough; last name is not required. Intake policy can only add tenant-specific questions.</p>",
+                "<h3>Current Extra Questions</h3>",
+                _question_table(extra_questions(policy, include_inactive=True)),
+                "<h3>Current Conditional Questions</h3>",
+                _question_table(conditional_questions(policy, include_inactive=True), conditional=True),
+                "<h3>Add Extra Question</h3>",
+                f'<form method="post" action="/admin/tenants/{tenant_id}/intake-policy/extra">',
+                _input("key", placeholder="property_role"),
+                "<br><br>",
+                _input("label", placeholder="Homeowner or renter"),
+                "<br><br>",
+                _textarea("question_text", "Are you the homeowner or are you renting?", rows=2),
+                "<br><br>",
+                _checkbox("required", False),
+                "<br><br>",
+                _checkbox("include_in_sms", True),
+                "<br><br>",
+                _checkbox("include_in_admin", True),
+                "<br><br>",
+                _checkbox("active", True),
+                "<br><br>",
+                "<button type=\"submit\">Add Extra Question</button>",
+                "</form>",
+                "<h3>Add Conditional Question</h3>",
+                f'<form method="post" action="/admin/tenants/{tenant_id}/intake-policy/conditional">',
+                _input("key", placeholder="can_shut_water_off"),
+                "<br><br>",
+                _input("label", placeholder="Can shut water off"),
+                "<br><br>",
+                _input("condition_type", "urgency_contains", "always/urgency_contains/issue_contains"),
+                "<br><br>",
+                _textarea("condition_keywords", "active leak\nwater is still running\nflooding", rows=4),
+                "<br><br>",
+                _textarea("question_text", "Can you shut the water off there?", rows=2),
+                "<br><br>",
+                _checkbox("required", False),
+                "<br><br>",
+                _checkbox("include_in_sms", True),
+                "<br><br>",
+                _checkbox("active", True),
+                "<br><br>",
+                "<button type=\"submit\">Add Conditional Question</button>",
+                "</form>",
+                "<h3>Edit Policy JSON</h3>",
+                "<p>This is the fallback editor for changing, deactivating, or removing configured questions.</p>",
+                f'<form method="post" action="/admin/tenants/{tenant_id}/intake-policy">',
+                _checkbox("enabled", bool(policy.get("enabled") if policy else True)),
+                "<br><br>",
+                _textarea("extra_questions_json", policy_to_json(policy, "extra_questions_json"), rows=10),
+                "<br><br>",
+                _textarea("conditional_questions_json", policy_to_json(policy, "conditional_questions_json"), rows=10),
+                "<br><br>",
+                _textarea("sms_include_extra_fields", _lines_from_json(policy.get("sms_include_extra_fields_json") if policy else ""), rows=4),
+                "<br><br>",
+                _textarea("admin_display_fields", _lines_from_json(policy.get("admin_display_fields_json") if policy else ""), rows=4),
+                "<br><br>",
+                _textarea("notes", policy.get("notes") if policy else "", rows=4),
+                "<br><br>",
+                "<button type=\"submit\">Save Intake Policy</button>",
+                "</form>",
+                "<h3>Generated Prompt Preview</h3>",
+                f"<pre>{escape(preview)}</pre>",
+            ]
+        )
+        return _page(f"Tenant {tenant_id} Intake Policy", body)
+
+    @router.post("/admin/tenants/{tenant_id}/intake-policy")
+    async def admin_update_intake_policy(tenant_id: int, request: Request):
+        tenant = repository.get_tenant(tenant_id)
+        if not tenant:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        form = await request.form()
+        extra_question_values = _json_list_from_text(str(form.get("extra_questions_json", "[]")))
+        conditional_question_values = _json_list_from_text(str(form.get("conditional_questions_json", "[]")))
+        if extra_question_values is None or conditional_question_values is None:
+            return _page(
+                "Invalid Intake Policy JSON",
+                f'<p>Extra questions and conditional questions must be valid JSON arrays.</p><p><a href="/admin/tenants/{tenant_id}/intake-policy">Back to intake policy</a></p>',
+                status_code=400,
+            )
+        repository.update_intake_policy(
+            tenant_id,
+            enabled=_parse_form_bool(form.get("enabled")),
+            extra_questions=extra_question_values,
+            conditional_questions=conditional_question_values,
+            sms_include_extra_fields=_lines_to_list(str(form.get("sms_include_extra_fields", ""))),
+            admin_display_fields=_lines_to_list(str(form.get("admin_display_fields", ""))),
+            notes=str(form.get("notes", "")).strip(),
+        )
+        return RedirectResponse(f"/admin/tenants/{tenant_id}/intake-policy", status_code=303)
+
+    @router.post("/admin/tenants/{tenant_id}/intake-policy/extra")
+    async def admin_add_intake_extra_question(tenant_id: int, request: Request):
+        policy = repository.get_intake_policy(tenant_id)
+        if not policy:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        form = await request.form()
+        extra_question_values = _json_list_from_text(policy.get("extra_questions_json") or "[]") or []
+        conditional_question_values = _json_list_from_text(policy.get("conditional_questions_json") or "[]") or []
+        extra_question_values.append(
+            {
+                "key": str(form.get("key", "")).strip(),
+                "label": str(form.get("label", "")).strip(),
+                "question_text": str(form.get("question_text", "")).strip(),
+                "required": _parse_form_bool(form.get("required")),
+                "include_in_sms": _parse_form_bool(form.get("include_in_sms")),
+                "include_in_admin": _parse_form_bool(form.get("include_in_admin")),
+                "active": _parse_form_bool(form.get("active")),
+            }
+        )
+        repository.update_intake_policy(
+            tenant_id,
+            enabled=bool(policy.get("enabled")),
+            extra_questions=extra_question_values,
+            conditional_questions=conditional_question_values,
+            sms_include_extra_fields=_lines_to_list(_lines_from_json(policy.get("sms_include_extra_fields_json") or "")),
+            admin_display_fields=_lines_to_list(_lines_from_json(policy.get("admin_display_fields_json") or "")),
+            notes=policy.get("notes") or "",
+        )
+        return RedirectResponse(f"/admin/tenants/{tenant_id}/intake-policy", status_code=303)
+
+    @router.post("/admin/tenants/{tenant_id}/intake-policy/conditional")
+    async def admin_add_intake_conditional_question(tenant_id: int, request: Request):
+        policy = repository.get_intake_policy(tenant_id)
+        if not policy:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        form = await request.form()
+        extra_question_values = _json_list_from_text(policy.get("extra_questions_json") or "[]") or []
+        conditional_question_values = _json_list_from_text(policy.get("conditional_questions_json") or "[]") or []
+        conditional_question_values.append(
+            {
+                "key": str(form.get("key", "")).strip(),
+                "label": str(form.get("label", "")).strip(),
+                "condition_type": str(form.get("condition_type", "")).strip(),
+                "condition_keywords": _lines_to_list(str(form.get("condition_keywords", ""))),
+                "question_text": str(form.get("question_text", "")).strip(),
+                "required": _parse_form_bool(form.get("required")),
+                "include_in_sms": _parse_form_bool(form.get("include_in_sms")),
+                "include_in_admin": True,
+                "active": _parse_form_bool(form.get("active")),
+            }
+        )
+        repository.update_intake_policy(
+            tenant_id,
+            enabled=bool(policy.get("enabled")),
+            extra_questions=extra_question_values,
+            conditional_questions=conditional_question_values,
+            sms_include_extra_fields=_lines_to_list(_lines_from_json(policy.get("sms_include_extra_fields_json") or "")),
+            admin_display_fields=_lines_to_list(_lines_from_json(policy.get("admin_display_fields_json") or "")),
+            notes=policy.get("notes") or "",
+        )
+        return RedirectResponse(f"/admin/tenants/{tenant_id}/intake-policy", status_code=303)
 
     @router.get("/admin/tenants/{tenant_id}/prompt", response_class=HTMLResponse)
     async def admin_tenant_prompt(tenant_id: str):
@@ -414,12 +616,13 @@ def create_admin_router(settings: Settings) -> APIRouter:
         if not tenant:
             return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
         active_profile = repository.get_active_prompt_profile(tenant_id)
+        intake_policy = repository.get_intake_policy(tenant_id)
         profiles = repository.list_prompt_profiles(tenant_id)
-        preview = PromptBuilder().build("913-555-0123", tenant=tenant, profile=active_profile) if active_profile else ""
+        preview = PromptBuilder().build("913-555-0123", tenant=tenant, profile=active_profile, intake_policy=intake_policy) if active_profile else ""
         body = "\n".join(
             [
                 f"<h2>{escape(tenant['name'])} Prompt</h2>",
-                f'<p><a href="/admin/tenants/{tenant_id}">Back to tenant detail</a> | <a href="/admin/tenants">Back to tenants</a></p>',
+                f'<p><a href="/admin/tenants/{tenant_id}">Back to tenant detail</a> | <a href="/admin/tenants/{tenant_id}/intake-policy">Intake policy</a> | <a href="/admin/tenants">Back to tenants</a></p>',
                 "<h3>Core workflow is locked</h3>",
                 "<p>Style/persona settings can change wording, but required fields cannot be changed here. Required fields stay: issue, urgency, address, callback, name. First name is enough; last name is not required.</p>",
                 "<h3>Active Prompt Version</h3>",

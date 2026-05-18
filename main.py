@@ -25,6 +25,7 @@ from admin.routes import create_admin_router
 from config.settings import get_settings
 from storage.database import init_db
 from storage import repository
+from workflow.intake_policy import sms_extra_field_rows
 from workflow.notifications import SmsSendResult
 from workflow.prompt_builder import DEFAULT_GREETING, PromptBuilder
 from workflow.service_request import process_service_request
@@ -64,8 +65,13 @@ prompt_builder = PromptBuilder()
 # Prompt builder
 # ---------------------------------------------------------------------------
 
-def make_instructions(caller_number: str, tenant: Optional[dict] = None, prompt_profile: Optional[dict] = None) -> str:
-    return prompt_builder.build(caller_number, tenant=tenant, profile=prompt_profile)
+def make_instructions(
+    caller_number: str,
+    tenant: Optional[dict] = None,
+    prompt_profile: Optional[dict] = None,
+    intake_policy: Optional[dict] = None,
+) -> str:
+    return prompt_builder.build(caller_number, tenant=tenant, profile=prompt_profile, intake_policy=intake_policy)
 
 
 # ---------------------------------------------------------------------------
@@ -85,6 +91,10 @@ TOOLS = [
                 "address":  {"type": "string", "description": "Full service address"},
                 "callback": {"type": "string", "description": "Callback phone number"},
                 "name":     {"type": "string", "description": "Customer name"},
+                "extra_fields": {
+                    "type": "object",
+                    "description": "Optional tenant-specific extra answers, keyed by intake policy field key.",
+                },
             },
             "required": ["issue", "urgency", "address", "callback", "name"],
         },
@@ -92,10 +102,15 @@ TOOLS = [
 ]
 
 
-def build_session_update(caller_number: str, tenant: Optional[dict] = None, prompt_profile: Optional[dict] = None) -> dict:
+def build_session_update(
+    caller_number: str,
+    tenant: Optional[dict] = None,
+    prompt_profile: Optional[dict] = None,
+    intake_policy: Optional[dict] = None,
+) -> dict:
     session = {
         "type":        "realtime",
-        "instructions": make_instructions(caller_number, tenant, prompt_profile),
+        "instructions": make_instructions(caller_number, tenant, prompt_profile, intake_policy),
         "tools":       TOOLS,
         "tool_choice": "auto",
     }
@@ -243,6 +258,7 @@ async def voice(request: Request):
         return Response(content=twiml, media_type="application/xml")
 
     prompt_profile = repository.get_active_prompt_profile(tenant["id"])
+    intake_policy = repository.get_intake_policy(tenant["id"])
     repository.create_or_update_call(
         call_sid,
         from_number,
@@ -259,6 +275,7 @@ async def voice(request: Request):
             "tenant_id": tenant["id"],
             "tenant_phone_id": tenant_phone.get("id") if tenant_phone else None,
             "prompt_version_id": prompt_profile["id"] if prompt_profile else None,
+            "intake_policy_id": intake_policy["id"] if intake_policy else None,
         },
     )
 
@@ -270,6 +287,7 @@ async def voice(request: Request):
         "tenant_phone": tenant_phone,
         "telephony_profile": telephony_profile,
         "prompt_profile": prompt_profile,
+        "intake_policy": intake_policy,
         "prompt_version_id": prompt_profile["id"] if prompt_profile else None,
         "complete": False,
     }
@@ -287,7 +305,7 @@ async def voice(request: Request):
 # SMS
 # ---------------------------------------------------------------------------
 
-async def send_sms(call_sid: str, info: dict, from_number: str, to_number: str) -> SmsSendResult:
+def build_sms_body(info: dict, from_number: str, intake_policy: Optional[dict] = None) -> str:
     body = (
         f"NEW PLUMBING LEAD\n\n"
         f"Name: {info.get('name',     'N/A')}\n"
@@ -296,6 +314,15 @@ async def send_sms(call_sid: str, info: dict, from_number: str, to_number: str) 
         f"Urgency: {info.get('urgency', 'N/A')}\n"
         f"Address: {info.get('address', 'N/A')}"
     )
+    extra_rows = sms_extra_field_rows(intake_policy, info)
+    if extra_rows:
+        extra_text = "\n".join(f"{label}: {value}" for label, value in extra_rows)
+        body = f"{body}\n\nExtra:\n{extra_text}"
+    return body
+
+
+async def send_sms(call_sid: str, info: dict, from_number: str, to_number: str, intake_policy: Optional[dict] = None) -> SmsSendResult:
+    body = build_sms_body(info, from_number, intake_policy)
     log.info(f"[{call_sid}] Sending SMS to {to_number}:\n{body}")
     try:
         message = await asyncio.to_thread(
@@ -479,9 +506,10 @@ async def media_stream(ws: WebSocket):
                     session = sessions.get(call_sid, {})
                     log.info(f"[{call_sid}] submit_service_request: {args}")
                     notification_sms_number = session.get("notification_sms_number") or ""
+                    intake_policy = session.get("intake_policy")
 
                     async def send_tenant_sms(send_call_sid: str, send_args: dict, send_from_number: str):
-                        return await send_sms(send_call_sid, send_args, send_from_number, notification_sms_number)
+                        return await send_sms(send_call_sid, send_args, send_from_number, notification_sms_number, intake_policy)
 
                     result = await process_service_request(
                         call_sid,
@@ -535,9 +563,11 @@ async def media_stream(ws: WebSocket):
                     or repository.get_call_prompt_profile(call_sid)
                     or repository.get_active_prompt_profile(tenant["id"])
                 )
+                intake_policy = session.get("intake_policy") or repository.get_intake_policy(tenant["id"])
                 session["tenant"] = tenant
                 session["tenant_id"] = tenant["id"]
                 session["prompt_profile"] = prompt_profile
+                session["intake_policy"] = intake_policy
                 session["prompt_version_id"] = prompt_profile["id"] if prompt_profile else None
                 session["greeting"] = (
                     prompt_profile.get("greeting") if prompt_profile else tenant.get("greeting")
@@ -555,7 +585,11 @@ async def media_stream(ws: WebSocket):
                 repository.record_call_event(
                     call_sid,
                     "media_stream_started",
-                    {**data.get("start", {}), "prompt_version_id": session.get("prompt_version_id")},
+                    {
+                        **data.get("start", {}),
+                        "prompt_version_id": session.get("prompt_version_id"),
+                        "intake_policy_id": intake_policy["id"] if intake_policy else None,
+                    },
                 )
 
                 log.info(f"[{call_sid}] Connecting to OpenAI: {OAI_URL}")
@@ -565,7 +599,7 @@ async def media_stream(ws: WebSocket):
                 )
                 log.info(f"[{call_sid}] OpenAI connected")
 
-                session_update = build_session_update(from_number, tenant, prompt_profile)
+                session_update = build_session_update(from_number, tenant, prompt_profile, intake_policy)
                 raw_su = json.dumps(session_update)
                 log.info(f"[{call_sid}] SENDING session.update")
                 asyncio.create_task(oai_reader())
