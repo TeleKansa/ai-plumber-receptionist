@@ -13,6 +13,7 @@ VALID_ARGS = {
     "address": "6100 West 120th Street",
     "callback": "732-789-0675",
     "name": "Sam Rivera",
+    "extra_fields": {"additional_notes": "gate code 1234"},
 }
 
 FIRST_NAME_ARGS = {
@@ -21,6 +22,7 @@ FIRST_NAME_ARGS = {
     "address": "6100 West 120th Street",
     "callback": "732-789-0675",
     "name": "Sam",
+    "extra_fields": {"additional_notes": "gate code 1234"},
 }
 
 VALID_CALLER_TEXT = (

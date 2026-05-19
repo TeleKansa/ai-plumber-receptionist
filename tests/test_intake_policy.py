@@ -5,7 +5,12 @@ import unittest
 from main import build_sms_body
 from storage import repository
 from storage.database import configure_database, init_db
-from workflow.intake_policy import extra_questions, sms_extra_field_rows
+from workflow.intake_policy import (
+    ADDITIONAL_NOTES_KEY,
+    DEFAULT_ADDITIONAL_NOTES_QUESTION,
+    extra_questions,
+    sms_extra_field_rows,
+)
 from workflow.notifications import SmsSendResult
 from workflow.prompt_builder import PromptBuilder
 from workflow.service_request import process_service_request
@@ -17,6 +22,7 @@ BASE_ARGS = {
     "address": "6100 West 120th Street",
     "callback": "732-789-0675",
     "name": "Sam",
+    "extra_fields": {"additional_notes": "gate code 1234"},
 }
 
 CALLER_TEXT = "My name is Sam. The kitchen sink is leaking at 6100 West 120th Street."
@@ -59,7 +65,11 @@ class IntakePolicyTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNotNone(policy)
         self.assertTrue(policy["enabled"])
-        self.assertEqual(policy["extra_questions_json"], "[]")
+        questions = extra_questions(policy)
+        self.assertEqual(questions[0]["key"], ADDITIONAL_NOTES_KEY)
+        self.assertEqual(questions[0]["collection_mode"], "ask_once")
+        self.assertTrue(questions[0]["include_in_sms"])
+        self.assertIn("Anything else the plumber should know", questions[0]["question_text"])
         self.assertEqual(policy["conditional_questions_json"], "[]")
 
     def test_extra_and_conditional_questions_appear_in_prompt(self):
@@ -67,7 +77,8 @@ class IntakePolicyTests(unittest.IsolatedAsyncioTestCase):
         policy = repository.update_intake_policy(
             tenant["id"],
             extra_questions=[
-                property_role_question("ask_once")
+                property_role_question("ask_once"),
+                DEFAULT_ADDITIONAL_NOTES_QUESTION,
             ],
             conditional_questions=[
                 {
@@ -93,6 +104,8 @@ class IntakePolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("TENANT INTAKE POLICY", prompt)
         self.assertIn("Homeowner or renter", prompt)
         self.assertIn("Can shut water off", prompt)
+        self.assertIn("Anything else the plumber should know before I send this over?", prompt)
+        self.assertIn("ask it last as the final pre-submit question", prompt)
         self.assertIn("extra_fields", prompt)
         self.assertIn("Before calling submit_service_request, ask every active required and ask_once", prompt)
         self.assertIn("Do not silently skip ask_once questions", prompt)
@@ -190,6 +203,60 @@ class IntakePolicyTests(unittest.IsolatedAsyncioTestCase):
         body = build_sms_body(args, "+19135550123", policy)
         self.assertIn("Extra:", body)
         self.assertIn("Homeowner or renter: homeowner", body)
+
+    async def test_additional_notes_are_saved_and_included_in_sms(self):
+        tenant = repository.get_default_tenant()
+        policy = repository.get_intake_policy(tenant["id"])
+        args = dict(BASE_ARGS)
+        args["extra_fields"] = {"additional_notes": "gate code is 1234"}
+        repository.create_or_update_call("CALL_ADDITIONAL_NOTES", "+19135550123", "+15551234567", tenant_id=tenant["id"])
+        sender = FakeSmsSender()
+
+        result = await process_service_request(
+            "CALL_ADDITIONAL_NOTES",
+            args,
+            "+19135550123",
+            "+15557654321",
+            sender,
+            caller_text=CALLER_TEXT,
+            tenant_id=tenant["id"],
+        )
+
+        self.assertTrue(result.output["success"])
+        lead = repository.get_lead_by_call_sid("CALL_ADDITIONAL_NOTES")
+        self.assertEqual(lead["extra_fields"]["additional_notes"], "gate code is 1234")
+        self.assertIn("Additional notes: gate code is 1234", build_sms_body(args, "+19135550123", policy))
+
+    async def test_additional_notes_none_after_caller_response_allows_submit(self):
+        tenant = repository.get_default_tenant()
+        args = dict(BASE_ARGS)
+        args["extra_fields"] = {"additional_notes": "none"}
+        repository.create_or_update_call("CALL_ADDITIONAL_NOTES_NONE", "+19135550123", "+15551234567", tenant_id=tenant["id"])
+        sender = FakeSmsSender()
+
+        result = await process_service_request(
+            "CALL_ADDITIONAL_NOTES_NONE",
+            args,
+            "+19135550123",
+            "+15557654321",
+            sender,
+            caller_text=CALLER_TEXT,
+            tenant_id=tenant["id"],
+            intake_state={
+                "pending_extra_question": {
+                    "key": "additional_notes",
+                    "question_text": "Anything else the plumber should know before I send this over?",
+                    "asked": True,
+                    "caller_response_after_pending": True,
+                    "caller_response_text": "No.",
+                }
+            },
+        )
+
+        self.assertTrue(result.output["success"])
+        self.assertEqual(len(sender.calls), 1)
+        lead = repository.get_lead_by_call_sid("CALL_ADDITIONAL_NOTES_NONE")
+        self.assertEqual(lead["extra_fields"]["additional_notes"], "none")
 
     async def test_ask_once_unknown_without_caller_response_is_rejected(self):
         tenant = repository.get_default_tenant()

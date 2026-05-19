@@ -21,6 +21,16 @@ DEFAULT_AVOID_PHRASES = [
     "thanks for providing that",
 ]
 DEFAULT_PREFERRED_TERMS = ["service address", "callback number", "plumbing issue"]
+DEFAULT_ADDITIONAL_NOTES_QUESTION = {
+    "key": "additional_notes",
+    "label": "Additional notes",
+    "question_text": "Anything else the plumber should know before I send this over?",
+    "collection_mode": "ask_once",
+    "required": False,
+    "include_in_sms": True,
+    "include_in_admin": True,
+    "active": True,
+}
 
 
 def _normalize_phone(value: str) -> str:
@@ -310,12 +320,38 @@ def ensure_default_intake_policies(engine):
     with engine.begin() as conn:
         tenants = conn.execute(text("SELECT id FROM tenants")).mappings().all()
         for tenant in tenants:
-            policy_id = _scalar(
-                conn,
-                "SELECT id FROM tenant_intake_policies WHERE tenant_id = :tenant_id",
+            policy = conn.execute(
+                text(
+                    "SELECT id, extra_questions_json FROM tenant_intake_policies "
+                    "WHERE tenant_id = :tenant_id"
+                ),
                 {"tenant_id": tenant["id"]},
-            )
-            if policy_id is not None:
+            ).mappings().one_or_none()
+            if policy is not None:
+                try:
+                    extra_questions = json.loads(policy["extra_questions_json"] or "[]")
+                except json.JSONDecodeError:
+                    extra_questions = []
+                if not isinstance(extra_questions, list):
+                    extra_questions = []
+                has_additional_notes = any(
+                    isinstance(question, dict) and question.get("key") == "additional_notes"
+                    for question in extra_questions
+                )
+                if not has_additional_notes:
+                    extra_questions.append(DEFAULT_ADDITIONAL_NOTES_QUESTION)
+                    conn.execute(
+                        text(
+                            "UPDATE tenant_intake_policies "
+                            "SET extra_questions_json = :extra_questions_json, updated_at = :updated_at "
+                            "WHERE id = :policy_id"
+                        ),
+                        {
+                            "policy_id": policy["id"],
+                            "extra_questions_json": json.dumps(extra_questions),
+                            "updated_at": now,
+                        },
+                    )
                 continue
             conn.execute(
                 text(
@@ -328,7 +364,7 @@ def ensure_default_intake_policies(engine):
                 {
                     "tenant_id": tenant["id"],
                     "enabled": True,
-                    "extra_questions_json": "[]",
+                    "extra_questions_json": json.dumps([DEFAULT_ADDITIONAL_NOTES_QUESTION]),
                     "conditional_questions_json": "[]",
                     "sms_include_extra_fields_json": "[]",
                     "admin_display_fields_json": "[]",

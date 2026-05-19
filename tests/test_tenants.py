@@ -8,6 +8,7 @@ import main
 from config.settings import Settings
 from storage import database, repository
 from storage.database import configure_database, init_db
+from workflow.intake_policy import extra_questions
 
 
 def tenant_settings(tmpdir, twilio_number="+15551234567", notification_number="+15557654321"):
@@ -58,7 +59,7 @@ class TenantTests(unittest.TestCase):
         self.assertTrue(active_prompt["is_active"])
         self.assertIsNotNone(intake_policy)
         self.assertTrue(intake_policy["enabled"])
-        self.assertEqual(intake_policy["extra_questions_json"], "[]")
+        self.assertEqual(extra_questions(intake_policy)[0]["key"], "additional_notes")
 
     def test_new_tenant_defaults_to_onboarding_and_phone_not_live(self):
         init_db(tenant_settings(self.tmpdir.name))

@@ -56,3 +56,9 @@ Multi-tenant lite adds tenants, tenant phone numbers, tenant settings, tenant-sc
 Tenant intake policy now uses explicit `collection_mode` values: `required`, `ask_once`, and `passive`. Existing JSON questions without `collection_mode` are interpreted safely: `required=true` maps to `required`, and `required=false` maps to `ask_once`. New admin-created questions default to `ask_once`, so the AI must ask them before submit; callers can still answer `declined` or `unknown` and continue.
 
 Follow-up hotfix: `ask_once` no longer accepts AI-filled `unknown` or `declined` unless the call/session has evidence that the AI asked the pending question and the caller responded after it. This keeps ask-once flexible for callers while blocking silent skips.
+
+Default final notes add-on: tenants now get an active `additional_notes` ask-once field by default, using the question "Anything else the plumber should know before I send this over?" It is asked last before submit and can capture access notes, gate codes, pets, availability, or other context.
+
+## Future Milestone Candidate: Conversation Experience / Turn-Taking Polish
+
+Deeper conversation pacing is intentionally postponed. Future work can cover no immediate reprompt after the first question, one decision-point per turn, better barge-in handling, silence timeout tuning, post-closing courtesy response, and Twilio `clear`/`mark` plus OpenAI `response.cancel` improvements if needed.

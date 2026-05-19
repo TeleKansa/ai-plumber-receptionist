@@ -5,7 +5,21 @@ from typing import Optional
 
 SUPPORTED_CONDITIONS = {"always", "urgency_contains", "issue_contains"}
 COLLECTION_MODES = {"required", "ask_once", "passive"}
+ADDITIONAL_NOTES_KEY = "additional_notes"
+DEFAULT_ADDITIONAL_NOTES_QUESTION = {
+    "key": ADDITIONAL_NOTES_KEY,
+    "label": "Additional notes",
+    "question_text": "Anything else the plumber should know before I send this over?",
+    "collection_mode": "ask_once",
+    "required": False,
+    "include_in_sms": True,
+    "include_in_admin": True,
+    "active": True,
+}
 DECLINED_OR_UNKNOWN_VALUES = {
+    "all set",
+    "that's all",
+    "that is all",
     "declined",
     "do not know",
     "dont know",
@@ -15,6 +29,12 @@ DECLINED_OR_UNKNOWN_VALUES = {
     "i don't know",
     "n a",
     "na",
+    "no",
+    "no thanks",
+    "none",
+    "nope",
+    "nothing",
+    "nothing else",
     "no idea",
     "not provided",
     "not sure",
@@ -27,7 +47,7 @@ DECLINED_OR_UNKNOWN_VALUES = {
 def default_intake_policy() -> dict:
     return {
         "enabled": True,
-        "extra_questions_json": "[]",
+        "extra_questions_json": json.dumps([DEFAULT_ADDITIONAL_NOTES_QUESTION]),
         "conditional_questions_json": "[]",
         "sms_include_extra_fields_json": "[]",
         "admin_display_fields_json": "[]",
@@ -182,7 +202,9 @@ def applicable_questions(policy: Optional[dict], args: Optional[dict] = None) ->
         for question in conditional_questions(policy)
         if conditional_question_applies(question, args)
     )
-    return questions
+    regular_questions = [question for question in questions if question["key"] != ADDITIONAL_NOTES_KEY]
+    final_questions = [question for question in questions if question["key"] == ADDITIONAL_NOTES_KEY]
+    return regular_questions + final_questions
 
 
 def _extra_fields(args: Optional[dict]) -> dict:

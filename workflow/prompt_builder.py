@@ -1,7 +1,7 @@
 import json
 from typing import Optional
 
-from workflow.intake_policy import conditional_questions, extra_questions
+from workflow.intake_policy import ADDITIONAL_NOTES_KEY, conditional_questions, extra_questions
 
 
 DEFAULT_GREETING = "Plumbing office, what's going on?"
@@ -94,6 +94,7 @@ def _intake_policy_text(policy: Optional[dict]) -> str:
             "",
             "Submit answers for tenant-specific questions in submit_service_request.extra_fields as an object keyed by the field key.",
             "Before calling submit_service_request, ask every active required and ask_once tenant-specific question that applies.",
+            f"If {ADDITIONAL_NOTES_KEY} is active, ask it last as the final pre-submit question.",
             "Do not silently skip ask_once questions. Ask once before submit.",
             "If the caller answers an ask_once question, put the answer in extra_fields.",
             "Do not set extra_fields values to \"unknown\" unless the caller actually said they do not know, declined, or gave no answer after you asked.",
@@ -102,6 +103,7 @@ def _intake_policy_text(policy: Optional[dict]) -> str:
             "Required tenant-specific questions must have a useful answer; declined, unknown, or not provided does not satisfy required questions.",
             "Passive questions can be captured if naturally provided, but they do not have to be asked before submit.",
             "Do not let passive questions delay emergency lead capture. Core required fields still matter more than style or extra questions.",
+            "Avoid pushy wording like \"I need to know.\" Give the caller a moment to answer.",
         ]
     )
 
