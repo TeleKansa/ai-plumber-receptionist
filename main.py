@@ -93,7 +93,7 @@ TOOLS = [
                 "name":     {"type": "string", "description": "Customer name"},
                 "extra_fields": {
                     "type": "object",
-                    "description": "Tenant-specific intake policy answers, keyed by field key. Include required and ask_once question answers here; use 'declined' or 'unknown' for ask_once questions the caller cannot answer.",
+                    "description": "Tenant-specific intake policy answers, keyed by field key. Include required and ask_once question answers here. Do not set values to 'unknown' unless the caller actually said they do not know, declined, or gave no answer after you asked. Do not infer homeowner/renter.",
                 },
             },
             "required": ["issue", "urgency", "address", "callback", "name"],
@@ -436,6 +436,19 @@ async def media_stream(ws: WebSocket):
                         session = sessions.setdefault(call_sid, {})
                         caller_text_parts = session.setdefault("caller_text_parts", [])
                         caller_text_parts.append(clean_transcript)
+                        intake_state = session.setdefault("intake_state", {})
+                        pending_question = intake_state.get("pending_extra_question") or {}
+                        if pending_question.get("asked"):
+                            pending_question["caller_response_after_pending"] = True
+                            pending_question["caller_response_text"] = clean_transcript
+                            repository.record_call_event(
+                                call_sid,
+                                "intake_question_caller_response",
+                                {
+                                    "pending_extra_question": pending_question,
+                                    "transcript": clean_transcript,
+                                },
+                            )
                         repository.record_call_event(
                             call_sid,
                             "caller_transcript",
@@ -460,6 +473,15 @@ async def media_stream(ws: WebSocket):
 
             elif etype == "input_audio_buffer.speech_started":
                 session = sessions.get(call_sid, {})
+                intake_state = session.setdefault("intake_state", {})
+                pending_question = intake_state.get("pending_extra_question") or {}
+                if call_sid and pending_question.get("asked") and not pending_question.get("caller_response_after_pending"):
+                    pending_question["caller_response_after_pending"] = True
+                    repository.record_call_event(
+                        call_sid,
+                        "intake_question_caller_response_started",
+                        {"pending_extra_question": pending_question},
+                    )
                 if assistant_speaking or asyncio.get_running_loop().time() < suppress_input_until:
                     log.info(f"[{call_sid}] Ignoring speech_started during AI audio/suppress window")
                 elif not session.get("complete") and response_active:
@@ -519,6 +541,7 @@ async def media_stream(ws: WebSocket):
                         send_tenant_sms,
                         caller_text=" ".join(session.get("caller_text_parts", [])),
                         tenant_id=session.get("tenant_id"),
+                        intake_state=session.setdefault("intake_state", {}),
                     )
                     session["complete"] = result.should_hangup
 
@@ -538,6 +561,17 @@ async def media_stream(ws: WebSocket):
                     if result.closing_instructions:
                         response_create["response"] = {"instructions": result.closing_instructions}
                     await oai_ws.send(json.dumps(response_create))
+                    pending_question = session.setdefault("intake_state", {}).get("pending_extra_question") or {}
+                    if result.output.get("reason") in {
+                        "intake_policy_missing_extra_fields",
+                        "intake_policy_unanswered_extra_field",
+                    } and pending_question:
+                        pending_question["asked"] = True
+                        repository.record_call_event(
+                            call_sid,
+                            "intake_question_prompted",
+                            {"pending_extra_question": pending_question},
+                        )
 
             elif etype == "error":
                 err = evt.get("error") or {}

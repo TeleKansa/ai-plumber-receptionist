@@ -24,10 +24,10 @@ def _normalize_sms_result(result) -> SmsSendResult:
 
 def _validation_guidance(errors: dict[str, str]) -> str:
     if "name" in errors:
-        return "Ask for the caller's name again. A first name is enough. Do not ask for last name."
+        return "Ask exactly one question: Could I get your name? A first name is enough. Do not ask for last name."
     return (
         "The submitted service request is missing or has an invalid field. "
-        "Ask only for the first missing or invalid field, then stop. "
+        "Ask exactly one question for the missing or invalid field, then stop and wait. "
         "Do not invent the customer name, address, or any other field."
     )
 
@@ -40,6 +40,7 @@ async def process_service_request(
     send_sms_func,
     caller_text: str = "",
     tenant_id: Optional[int] = None,
+    intake_state: Optional[dict] = None,
 ):
     resolved_tenant_id = tenant_id
     if resolved_tenant_id is None:
@@ -49,6 +50,9 @@ async def process_service_request(
 
     errors = validate_service_request_args(args, caller_text=caller_text)
     if errors:
+        field_priority = ["issue", "urgency", "address", "callback", "name"]
+        next_field = next((field for field in field_priority if field in errors), next(iter(errors)))
+        errors = {next_field: errors[next_field]}
         guidance = _validation_guidance(errors)
         repository.record_call_event(
             call_sid,
@@ -75,12 +79,34 @@ async def process_service_request(
         )
 
     active_question_keys = [question["key"] for question in applicable_questions(intake_policy, args)]
-    missing_extra_fields = missing_policy_extra_fields(args, intake_policy)
+    missing_extra_fields = missing_policy_extra_fields(args, intake_policy, intake_state)
     if missing_extra_fields:
+        missing_extra_fields = [missing_extra_fields[0]]
+        reason = missing_extra_fields[0].get("reason") or "intake_policy_missing_extra_fields"
         guidance = missing_extra_guidance(missing_extra_fields)
+        if intake_state is not None:
+            intake_state["pending_extra_question"] = {
+                "key": missing_extra_fields[0]["key"],
+                "label": missing_extra_fields[0]["label"],
+                "question_text": missing_extra_fields[0]["question_text"],
+                "collection_mode": missing_extra_fields[0]["collection_mode"],
+                "asked": False,
+                "caller_response_after_pending": False,
+                "caller_response_text": "",
+            }
         repository.record_call_event(
             call_sid,
-            "intake_policy_missing_extra_fields",
+            "intake_question_required",
+            {
+                "pending_extra_question": missing_extra_fields[0],
+                "active_intake_policy_question_keys": active_question_keys,
+                "intake_policy_id": intake_policy.get("id") if intake_policy else None,
+                "guidance": guidance,
+            },
+        )
+        repository.record_call_event(
+            call_sid,
+            reason,
             {
                 "missing_extra_fields": missing_extra_fields,
                 "active_intake_policy_question_keys": active_question_keys,
@@ -93,13 +119,16 @@ async def process_service_request(
         return ServiceRequestResult(
             output={
                 "success": False,
-                "reason": "intake_policy_missing_extra_fields",
+                "reason": reason,
                 "missing_extra_fields": missing_extra_fields,
                 "guidance": guidance,
             },
             should_hangup=False,
             closing_instructions=guidance,
         )
+
+    if intake_state is not None:
+        intake_state.pop("pending_extra_question", None)
 
     existing_lead = repository.get_lead_by_call_sid(call_sid)
     if existing_lead:

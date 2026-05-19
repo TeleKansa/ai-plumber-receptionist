@@ -205,7 +205,19 @@ def validate_required_extra_fields(args: dict, policy: Optional[dict]) -> dict[s
     return errors
 
 
-def missing_policy_extra_fields(args: dict, policy: Optional[dict]) -> list[dict]:
+def _pending_question(intake_state: Optional[dict], key: str) -> dict:
+    if not intake_state:
+        return {}
+    pending = intake_state.get("pending_extra_question") or {}
+    return pending if pending.get("key") == key else {}
+
+
+def caller_responded_after_pending_question(intake_state: Optional[dict], key: str) -> bool:
+    pending = _pending_question(intake_state, key)
+    return bool(pending.get("caller_response_after_pending") or pending.get("caller_response_text"))
+
+
+def missing_policy_extra_fields(args: dict, policy: Optional[dict], intake_state: Optional[dict] = None) -> list[dict]:
     missing = []
     fields = _extra_fields(args)
     for question in applicable_questions(policy, args):
@@ -216,6 +228,18 @@ def missing_policy_extra_fields(args: dict, policy: Optional[dict]) -> list[dict
         has_value = bool(str(value or "").strip())
         declined_or_unknown = answer_is_declined_or_unknown(value)
         if mode == "ask_once" and has_value:
+            if declined_or_unknown and not caller_responded_after_pending_question(intake_state, question["key"]):
+                missing.append(
+                    {
+                        "key": question["key"],
+                        "label": question["label"],
+                        "question_text": question.get("question_text") or f"Please ask: {question['label']}",
+                        "collection_mode": mode,
+                        "reason": "intake_policy_unanswered_extra_field",
+                        "error": "The AI cannot use declined or unknown until the caller has responded after this question.",
+                    }
+                )
+                continue
             continue
         if mode == "required" and has_value and not declined_or_unknown:
             continue
@@ -225,6 +249,7 @@ def missing_policy_extra_fields(args: dict, policy: Optional[dict]) -> list[dict
                 "label": question["label"],
                 "question_text": question.get("question_text") or f"Please ask: {question['label']}",
                 "collection_mode": mode,
+                "reason": "intake_policy_missing_extra_fields",
                 "error": (
                     "A useful answer is required."
                     if mode == "required" and declined_or_unknown
@@ -243,12 +268,12 @@ def missing_extra_guidance(missing_fields: list[dict]) -> str:
     key = question.get("key")
     if question.get("collection_mode") == "required":
         return (
-            f"Ask the caller: {question_text} "
+            f"Ask exactly this one question and wait for the caller's answer: {question_text} "
             f"This tenant marked it required, so submit extra_fields.{key} only after the caller gives a useful answer."
         )
     return (
-        f"Ask the caller: {question_text} "
-        f"If they decline or do not know, submit extra_fields.{key} as 'declined' or 'unknown'. Then continue."
+        f"Ask exactly this one question and wait for the caller's answer: {question_text} "
+        f"If they decline or do not know, record 'declined' or 'unknown' in extra_fields.{key} after they say so."
     )
 
 

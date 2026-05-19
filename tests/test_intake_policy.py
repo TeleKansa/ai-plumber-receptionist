@@ -96,8 +96,12 @@ class IntakePolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("extra_fields", prompt)
         self.assertIn("Before calling submit_service_request, ask every active required and ask_once", prompt)
         self.assertIn("Do not silently skip ask_once questions", prompt)
+        self.assertIn("Ask exactly one question per turn", prompt)
+        self.assertIn("ask only the backend-guided missing question", prompt)
         self.assertIn("declined", prompt)
         self.assertIn("unknown", prompt)
+        self.assertIn("A first name is enough", prompt)
+        self.assertIn("Last name is not required", prompt)
         self.assertIn("Collect exactly: issue, urgency, address, callback, name", prompt)
 
     def test_legacy_required_false_maps_to_ask_once(self):
@@ -128,6 +132,7 @@ class IntakePolicyTests(unittest.IsolatedAsyncioTestCase):
         )
         repository.create_or_update_call("CALL_ASK_ONCE_MISSING", "+19135550123", "+15551234567", tenant_id=tenant["id"])
         sender = FakeSmsSender()
+        intake_state = {}
 
         result = await process_service_request(
             "CALL_ASK_ONCE_MISSING",
@@ -137,20 +142,24 @@ class IntakePolicyTests(unittest.IsolatedAsyncioTestCase):
             sender,
             caller_text=CALLER_TEXT,
             tenant_id=tenant["id"],
+            intake_state=intake_state,
         )
 
         self.assertFalse(result.output["success"])
         self.assertEqual(result.output["reason"], "intake_policy_missing_extra_fields")
         self.assertEqual(result.output["missing_extra_fields"][0]["key"], "property_role")
+        self.assertIn("Ask exactly this one question and wait for the caller's answer", result.output["guidance"])
         self.assertIn("Are you the homeowner or are you renting?", result.output["guidance"])
         self.assertFalse(result.should_hangup)
         self.assertEqual(sender.calls, [])
         self.assertIsNone(repository.get_lead_by_call_sid("CALL_ASK_ONCE_MISSING"))
+        self.assertEqual(intake_state["pending_extra_question"]["key"], "property_role")
         events = [
             event for event in repository.list_recent_call_events()
             if event["call_sid"] == "CALL_ASK_ONCE_MISSING"
         ]
         self.assertIn("intake_policy_missing_extra_fields", {event["event_type"] for event in events})
+        self.assertIn("intake_question_required", {event["event_type"] for event in events})
 
     async def test_ask_once_extra_field_answer_is_saved_and_sms_can_include_it(self):
         tenant = repository.get_default_tenant()
@@ -182,9 +191,9 @@ class IntakePolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("Extra:", body)
         self.assertIn("Homeowner or renter: homeowner", body)
 
-    async def test_ask_once_extra_field_allows_unknown_value(self):
+    async def test_ask_once_unknown_without_caller_response_is_rejected(self):
         tenant = repository.get_default_tenant()
-        policy = repository.update_intake_policy(
+        repository.update_intake_policy(
             tenant["id"],
             extra_questions=[property_role_question("ask_once")],
         )
@@ -201,11 +210,55 @@ class IntakePolicyTests(unittest.IsolatedAsyncioTestCase):
             sender,
             caller_text=CALLER_TEXT,
             tenant_id=tenant["id"],
+            intake_state={
+                "pending_extra_question": {
+                    "key": "property_role",
+                    "question_text": "Are you the homeowner or are you renting?",
+                    "asked": True,
+                    "caller_response_after_pending": False,
+                }
+            },
+        )
+
+        self.assertFalse(result.output["success"])
+        self.assertEqual(result.output["reason"], "intake_policy_unanswered_extra_field")
+        self.assertFalse(result.should_hangup)
+        self.assertEqual(sender.calls, [])
+        self.assertIsNone(repository.get_lead_by_call_sid("CALL_ASK_ONCE_UNKNOWN"))
+
+    async def test_ask_once_unknown_after_caller_response_is_accepted(self):
+        tenant = repository.get_default_tenant()
+        policy = repository.update_intake_policy(
+            tenant["id"],
+            extra_questions=[property_role_question("ask_once")],
+        )
+        args = dict(BASE_ARGS)
+        args["extra_fields"] = {"property_role": "unknown"}
+        repository.create_or_update_call("CALL_ASK_ONCE_UNKNOWN_AFTER_RESPONSE", "+19135550123", "+15551234567", tenant_id=tenant["id"])
+        sender = FakeSmsSender()
+
+        result = await process_service_request(
+            "CALL_ASK_ONCE_UNKNOWN_AFTER_RESPONSE",
+            args,
+            "+19135550123",
+            "+15557654321",
+            sender,
+            caller_text=CALLER_TEXT,
+            tenant_id=tenant["id"],
+            intake_state={
+                "pending_extra_question": {
+                    "key": "property_role",
+                    "question_text": "Are you the homeowner or are you renting?",
+                    "asked": True,
+                    "caller_response_after_pending": True,
+                    "caller_response_text": "I don't know.",
+                }
+            },
         )
 
         self.assertTrue(result.output["success"])
         self.assertEqual(len(sender.calls), 1)
-        lead = repository.get_lead_by_call_sid("CALL_ASK_ONCE_UNKNOWN")
+        lead = repository.get_lead_by_call_sid("CALL_ASK_ONCE_UNKNOWN_AFTER_RESPONSE")
         self.assertEqual(lead["extra_fields"]["property_role"], "unknown")
         self.assertIn("Homeowner or renter: unknown", build_sms_body(args, "+19135550123", policy))
 

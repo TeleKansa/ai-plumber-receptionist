@@ -54,3 +54,5 @@ Multi-tenant lite adds tenants, tenant phone numbers, tenant settings, tenant-sc
 ## Milestone 4B Intake Policy Hotfix Note
 
 Tenant intake policy now uses explicit `collection_mode` values: `required`, `ask_once`, and `passive`. Existing JSON questions without `collection_mode` are interpreted safely: `required=true` maps to `required`, and `required=false` maps to `ask_once`. New admin-created questions default to `ask_once`, so the AI must ask them before submit; callers can still answer `declined` or `unknown` and continue.
+
+Follow-up hotfix: `ask_once` no longer accepts AI-filled `unknown` or `declined` unless the call/session has evidence that the AI asked the pending question and the caller responded after it. This keeps ask-once flexible for callers while blocking silent skips.

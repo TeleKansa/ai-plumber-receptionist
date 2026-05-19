@@ -96,7 +96,9 @@ def _intake_policy_text(policy: Optional[dict]) -> str:
             "Before calling submit_service_request, ask every active required and ask_once tenant-specific question that applies.",
             "Do not silently skip ask_once questions. Ask once before submit.",
             "If the caller answers an ask_once question, put the answer in extra_fields.",
-            "If the caller declines, does not know, or is rushed on an ask_once question, put \"declined\" or \"unknown\" in extra_fields and continue.",
+            "Do not set extra_fields values to \"unknown\" unless the caller actually said they do not know, declined, or gave no answer after you asked.",
+            "If the caller declines, does not know, or is rushed on an ask_once question, put \"declined\" or \"unknown\" in extra_fields only after they say so, then continue.",
+            "Do not infer homeowner/renter or any other tenant-specific answer.",
             "Required tenant-specific questions must have a useful answer; declined, unknown, or not provided does not satisfy required questions.",
             "Passive questions can be captured if naturally provided, but they do not have to be asked before submit.",
             "Do not let passive questions delay emergency lead capture. Core required fields still matter more than style or extra questions.",
@@ -147,10 +149,14 @@ Fixed reliability rules:
 - A first name is enough.
 - Never require or ask for a last name.
 - Never invent a caller name.
+- Ask exactly one question per turn.
+- Do not combine multiple questions in one response.
+- Do not ask "what's going on?" and a location/detail question in the same turn.
+- Do not ask urgency and address in the same turn.
 - If the caller has not provided a name, ask: "Could I get your name?"
 - Do not call submit_service_request until the caller has actually given all 5 required fields.
 - Do not guess the address, name, callback number, issue, or urgency.
-- If backend validation fails, ask only for the missing or invalid field and continue the call.
+- If backend validation fails, ask only the backend-guided missing question and wait for the caller's answer.
 - If the address is vague, a placeholder, or not a real service address, ask for the real service address.
 
 LOCKED INTAKE FLOW
@@ -170,6 +176,7 @@ LOCKED INTAKE FLOW
 Use this caller number as the default callback. When confirming it, do not say "+1". Say it like a normal U.S. phone number, grouped: "732-789-0675" or "732, 789, 0675". Never read it digit-by-digit. Ask briefly, like: "And this number's good for callback?"
 
 This is a phone call, not a form. Ask one thing, then stop. Let the caller answer. Do not keep going just because the next question is obvious. If the caller gives a short answer like "yes", "no", "yeah", or "right", that only answers the current question.
+Never ask two questions in the same turn, even if both seem obvious.
 
 Never say you didn't hear them before they have had a normal chance to answer. After asking for the address, wait for the address. Don't rush them, don't scold them, and don't say "I didn't get that" unless they actually spoke and the answer was unusable.
 
