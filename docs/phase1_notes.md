@@ -62,3 +62,13 @@ Default final notes add-on: tenants now get an active `additional_notes` ask-onc
 ## Future Milestone Candidate: Conversation Experience / Turn-Taking Polish
 
 Deeper conversation pacing is intentionally postponed. Future work can cover no immediate reprompt after the first question, one decision-point per turn, better barge-in handling, silence timeout tuning, post-closing courtesy response, and Twilio `clear`/`mark` plus OpenAI `response.cancel` improvements if needed.
+
+## Conversation Polish Backlog
+
+1. If the caller already gave their name, do not ask "What is your name?" again. Prefer: "I heard Sam for the name, right?"
+2. If the caller says "this number is good" and caller phone is known, do not ask for callback again. Prefer a short acknowledgement: "Okay, we'll use this number."
+3. Avoid awkward double-confirmations such as: "What is your name? I caught your name is Sam, right?"
+4. Keep one-shot info dump support: if caller gives name, issue, urgency, address, callback, property role, and notes all at once, extract them and ask only genuinely missing or unclear fields.
+5. Later milestone: Conversation Experience / Naturalness Polish.
+
+Typo note: code/default seed data currently uses "Homeowner or renter"; no "Homowner or renter" source string was found in the repo. If production admin still shows the typo, it is likely stored admin-entered policy data and should be edited in the tenant intake policy page.
