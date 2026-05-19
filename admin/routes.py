@@ -11,6 +11,7 @@ from admin.auth import check_admin_credentials
 from config.settings import Settings
 from storage import repository
 from workflow.intake_policy import conditional_questions, extra_questions, policy_to_json
+from workflow.notifications import build_sms_body
 from workflow.prompt_builder import PromptBuilder
 
 
@@ -56,6 +57,7 @@ def _tenant_actions_table(tenants: list[dict]) -> str:
         detail_href = f"/admin/tenants/{tenant_id}"
         prompt_href = f"/admin/tenants/{tenant_id}/prompt"
         intake_href = f"/admin/tenants/{tenant_id}/intake-policy"
+        notification_href = f"/admin/tenants/{tenant_id}/notification-policy"
         rows.append(
             "<tr>"
             f'<td><a href="{detail_href}">{escape(tenant.get("name") or "")}</a></td>'
@@ -67,12 +69,13 @@ def _tenant_actions_table(tenants: list[dict]) -> str:
             f'<td><a href="{detail_href}">Details</a></td>'
             f'<td><a href="{prompt_href}">Prompt/persona settings</a></td>'
             f'<td><a href="{intake_href}">Intake policy</a></td>'
+            f'<td><a href="{notification_href}">Notification policy</a></td>'
             "</tr>"
         )
     return (
         "<table><thead><tr>"
         "<th>tenant</th><th>id</th><th>slug</th><th>status</th><th>business_name</th>"
-        "<th>notification_sms_number</th><th>details</th><th>prompt</th><th>intake</th>"
+        "<th>notification_sms_number</th><th>details</th><th>prompt</th><th>intake</th><th>notifications</th>"
         "</tr></thead><tbody>"
         f"{''.join(rows)}"
         "</tbody></table>"
@@ -210,6 +213,32 @@ def _question_table(questions: list[dict], conditional: bool = False) -> str:
     return f"<table><thead><tr>{header}</tr></thead><tbody>{''.join(rows)}</tbody></table>"
 
 
+def _notification_policy_preview(policy: dict, intake_policy: Optional[dict]) -> str:
+    sample = {
+        "name": "Sam",
+        "callback": "732-789-0675",
+        "issue": "Kitchen sink leaking underneath",
+        "urgency": "Water still coming out but shut off",
+        "address": "6100 West 120th Street",
+        "priority": "normal",
+        "priority_reason": "No emergency or urgent keywords matched.",
+        "extra_fields": {"property_role": "homeowner", "additional_notes": "gate code 1234"},
+    }
+    emergency_sample = dict(sample)
+    emergency_sample["urgency"] = "Water is still coming out and caller cannot shut it off"
+    emergency_sample["priority"] = "emergency"
+    emergency_sample["priority_reason"] = "Matched emergency keyword: water is still coming out"
+    return "\n".join(
+        [
+            "<h3>SMS Preview</h3>",
+            "<h4>Normal</h4>",
+            f"<pre>{escape(build_sms_body(sample, '732-789-0675', intake_policy, policy))}</pre>",
+            "<h4>Emergency</h4>",
+            f"<pre>{escape(build_sms_body(emergency_sample, '732-789-0675', intake_policy, policy))}</pre>",
+        ]
+    )
+
+
 def _json_list_from_text(value: str) -> Optional[list]:
     try:
         parsed = json.loads(value or "[]")
@@ -285,9 +314,9 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<h2>Recent Calls</h2>",
                 _render_table(calls, ["tenant_id", "prompt_version_id", "call_sid", "from_number", "to_number", "stream_sid", "status", "started_at", "ended_at"]),
                 "<h2>Recent Leads</h2>",
-                _render_table(leads, ["id", "tenant_id", "call_sid", "name", "callback", "address", "issue", "urgency", "extra_fields", "status", "created_at"]),
+                _render_table(leads, ["id", "tenant_id", "call_sid", "name", "callback", "address", "issue", "urgency", "priority", "priority_reason", "extra_fields", "status", "created_at"]),
                 "<h2>Recent Notifications</h2>",
-                _render_table(notifications, ["id", "tenant_id", "lead_id", "channel", "to_number", "status", "provider_message_sid", "error", "created_at", "sent_at"]),
+                _render_table(notifications, ["id", "tenant_id", "lead_id", "channel", "to_number", "recipient_type", "status", "attempt_number", "provider_message_sid", "error", "created_at", "sent_at"]),
                 "<h2>Recent Call Events</h2>",
                 _render_table(events, ["id", "tenant_id", "call_sid", "event_type", "payload_json", "created_at"]),
             ]
@@ -376,7 +405,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
             [
                 f"<h2>{escape(tenant['name'])}</h2>",
                 '<p><a href="/admin/tenants">Back to tenants</a></p>',
-                f'<p><strong><a href="/admin/tenants/{tenant_id}/prompt">Prompt/persona settings</a></strong> | <strong><a href="/admin/tenants/{tenant_id}/intake-policy">Intake policy</a></strong></p>',
+                f'<p><strong><a href="/admin/tenants/{tenant_id}/prompt">Prompt/persona settings</a></strong> | <strong><a href="/admin/tenants/{tenant_id}/intake-policy">Intake policy</a></strong> | <strong><a href="/admin/tenants/{tenant_id}/notification-policy">Notification policy</a></strong></p>',
                 "<h3>Tenant Summary</h3>",
                 _render_table(
                     tenant_summary,
@@ -435,9 +464,9 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<h3>Recent Calls</h3>",
                 _render_table(calls, ["call_sid", "prompt_version_id", "from_number", "to_number", "status", "started_at", "ended_at"]),
                 "<h3>Recent Leads</h3>",
-                _render_table(leads, ["id", "call_sid", "name", "callback", "address", "issue", "urgency", "extra_fields", "status", "created_at"]),
+                _render_table(leads, ["id", "call_sid", "name", "callback", "address", "issue", "urgency", "priority", "priority_reason", "extra_fields", "status", "created_at"]),
                 "<h3>Recent Notifications</h3>",
-                _render_table(notifications, ["id", "lead_id", "channel", "to_number", "status", "error", "created_at", "sent_at"]),
+                _render_table(notifications, ["id", "lead_id", "channel", "to_number", "recipient_type", "status", "attempt_number", "error", "created_at", "sent_at"]),
                 "<h3>Recent Events</h3>",
                 _render_table(events, ["id", "call_sid", "event_type", "payload_json", "created_at"]),
             ]
@@ -614,6 +643,87 @@ def create_admin_router(settings: Settings) -> APIRouter:
             notes=policy.get("notes") or "",
         )
         return RedirectResponse(f"/admin/tenants/{tenant_id}/intake-policy", status_code=303)
+
+    @router.get("/admin/tenants/{tenant_id}/notification-policy", response_class=HTMLResponse)
+    async def admin_tenant_notification_policy(tenant_id: str):
+        parsed_tenant_id = _parse_tenant_id(tenant_id)
+        if parsed_tenant_id is None:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        tenant_id = parsed_tenant_id
+        tenant = repository.get_tenant(tenant_id)
+        if not tenant:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        policy = repository.get_notification_policy(tenant_id)
+        intake_policy = repository.get_intake_policy(tenant_id)
+        notifications = repository.list_recent_notifications(tenant_id=tenant_id)
+        failed_notifications = repository.list_failed_notifications(tenant_id=tenant_id)
+        body = "\n".join(
+            [
+                f"<h2>{escape(tenant['name'])} Notification Policy</h2>",
+                f'<p><a href="/admin/tenants/{tenant_id}">Back to tenant detail</a> | <a href="/admin/tenants">Back to tenants</a></p>',
+                "<p>Emergency leads are saved first, then notifications are attempted. If no emergency recipient is configured, emergency leads fall back to normal recipients and are clearly marked emergency.</p>",
+                f'<form method="post" action="/admin/tenants/{tenant_id}/notification-policy">',
+                "<h3>Recipients</h3>",
+                _textarea("normal_sms_recipients", _lines_from_json(policy.get("normal_sms_recipients_json") if policy else ""), rows=4),
+                "<br><br>",
+                _textarea("emergency_sms_recipients", _lines_from_json(policy.get("emergency_sms_recipients_json") if policy else ""), rows=4),
+                "<br><br>",
+                _textarea("backup_sms_recipients", _lines_from_json(policy.get("backup_sms_recipients_json") if policy else ""), rows=4),
+                "<br><br>",
+                _checkbox("send_normal_leads", bool(policy.get("send_normal_leads") if policy else True)),
+                "<br><br>",
+                _checkbox("send_emergency_leads", bool(policy.get("send_emergency_leads") if policy else True)),
+                "<br><br>",
+                _checkbox("include_extra_fields", bool(policy.get("include_extra_fields") if policy else True)),
+                "<br><br>",
+                _checkbox("include_additional_notes", bool(policy.get("include_additional_notes") if policy else True)),
+                "<h3>Emergency Classification</h3>",
+                _textarea("emergency_keywords", _lines_from_json(policy.get("emergency_keywords_json") if policy else ""), rows=8),
+                "<br><br>",
+                _textarea("emergency_rules_json", policy.get("emergency_rules_json") if policy else "[]", rows=4),
+                "<br><br>",
+                _textarea("notes", policy.get("notes") if policy else "", rows=4),
+                "<br><br>",
+                "<button type=\"submit\">Save Notification Policy</button>",
+                "</form>",
+                _notification_policy_preview(policy or {}, intake_policy),
+                "<h3>Recent Notifications</h3>",
+                _render_table(notifications, ["id", "lead_id", "to_number", "recipient_type", "status", "attempt_number", "provider_message_sid", "error", "created_at", "sent_at"]),
+                "<h3>Failed Notifications</h3>",
+                _render_table(failed_notifications, ["id", "lead_id", "to_number", "recipient_type", "status", "attempt_number", "error", "created_at"]),
+                "<p>Retry tool: run <code>python scripts/retry_failed_notifications.py --tenant-id "
+                f"{tenant_id}</code> from the repo with production environment variables loaded.</p>",
+            ]
+        )
+        return _page(f"Tenant {tenant_id} Notification Policy", body)
+
+    @router.post("/admin/tenants/{tenant_id}/notification-policy")
+    async def admin_update_notification_policy(tenant_id: int, request: Request):
+        tenant = repository.get_tenant(tenant_id)
+        if not tenant:
+            return _admin_not_found("Tenant Not Found", f"Tenant {tenant_id} was not found.")
+        form = await request.form()
+        emergency_rules = _json_list_from_text(str(form.get("emergency_rules_json", "[]")))
+        if emergency_rules is None:
+            return _page(
+                "Invalid Notification Policy JSON",
+                f'<p>Emergency rules must be a valid JSON array.</p><p><a href="/admin/tenants/{tenant_id}/notification-policy">Back to notification policy</a></p>',
+                status_code=400,
+            )
+        repository.update_notification_policy(
+            tenant_id,
+            normal_sms_recipients=_lines_to_list(str(form.get("normal_sms_recipients", ""))),
+            emergency_sms_recipients=_lines_to_list(str(form.get("emergency_sms_recipients", ""))),
+            backup_sms_recipients=_lines_to_list(str(form.get("backup_sms_recipients", ""))),
+            send_normal_leads=_parse_form_bool(form.get("send_normal_leads")),
+            send_emergency_leads=_parse_form_bool(form.get("send_emergency_leads")),
+            include_extra_fields=_parse_form_bool(form.get("include_extra_fields")),
+            include_additional_notes=_parse_form_bool(form.get("include_additional_notes")),
+            emergency_keywords=_lines_to_list(str(form.get("emergency_keywords", ""))),
+            emergency_rules=emergency_rules,
+            notes=str(form.get("notes", "")).strip(),
+        )
+        return RedirectResponse(f"/admin/tenants/{tenant_id}/notification-policy", status_code=303)
 
     @router.get("/admin/tenants/{tenant_id}/prompt", response_class=HTMLResponse)
     async def admin_tenant_prompt(tenant_id: str):

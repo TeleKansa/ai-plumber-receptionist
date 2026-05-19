@@ -21,6 +21,19 @@ DEFAULT_AVOID_PHRASES = [
     "thanks for providing that",
 ]
 DEFAULT_PREFERRED_TERMS = ["service address", "callback number", "plumbing issue"]
+DEFAULT_EMERGENCY_KEYWORDS = [
+    "active leak",
+    "burst pipe",
+    "cannot shut",
+    "can't shut",
+    "cant shut",
+    "flooding",
+    "sewage",
+    "sewer backup",
+    "water is still coming out",
+    "water still coming out",
+    "water still running",
+]
 DEFAULT_ADDITIONAL_NOTES_QUESTION = {
     "key": "additional_notes",
     "label": "Additional notes",
@@ -66,6 +79,19 @@ def add_missing_tenant_columns(engine):
         lead_columns = _columns_for(engine, "leads")
         if lead_columns and "extra_fields_json" not in lead_columns:
             conn.execute(text("ALTER TABLE leads ADD COLUMN extra_fields_json TEXT"))
+        if lead_columns and "priority" not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN priority VARCHAR(32)"))
+        if lead_columns and "priority_reason" not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN priority_reason TEXT"))
+        if lead_columns and "classification_json" not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN classification_json TEXT"))
+        notification_columns = _columns_for(engine, "notifications")
+        if notification_columns and "recipient_type" not in notification_columns:
+            conn.execute(text("ALTER TABLE notifications ADD COLUMN recipient_type VARCHAR(32)"))
+        if notification_columns and "policy_snapshot_json" not in notification_columns:
+            conn.execute(text("ALTER TABLE notifications ADD COLUMN policy_snapshot_json TEXT"))
+        if notification_columns and "attempt_number" not in notification_columns:
+            conn.execute(text("ALTER TABLE notifications ADD COLUMN attempt_number INTEGER DEFAULT 1"))
 
 
 def _scalar(conn, sql: str, params: dict):
@@ -375,10 +401,75 @@ def ensure_default_intake_policies(engine):
             )
 
 
+def ensure_default_notification_policies(engine):
+    now = datetime.now(timezone.utc)
+    with engine.begin() as conn:
+        tenants = conn.execute(
+            text(
+                "SELECT tenants.id, tenant_settings.notification_sms_number, "
+                "tenant_settings.backup_notification_sms_number "
+                "FROM tenants "
+                "LEFT JOIN tenant_settings ON tenant_settings.tenant_id = tenants.id"
+            )
+        ).mappings().all()
+        for tenant in tenants:
+            policy_id = _scalar(
+                conn,
+                "SELECT id FROM tenant_notification_policies WHERE tenant_id = :tenant_id",
+                {"tenant_id": tenant["id"]},
+            )
+            normal = [tenant["notification_sms_number"]] if tenant["notification_sms_number"] else []
+            backup = [tenant["backup_notification_sms_number"]] if tenant["backup_notification_sms_number"] else []
+            if policy_id is None:
+                conn.execute(
+                    text(
+                        "INSERT INTO tenant_notification_policies "
+                        "(tenant_id, normal_sms_recipients_json, emergency_sms_recipients_json, "
+                        "backup_sms_recipients_json, send_normal_leads, send_emergency_leads, "
+                        "include_extra_fields, include_additional_notes, emergency_keywords_json, "
+                        "emergency_rules_json, notes, created_at, updated_at) "
+                        "VALUES (:tenant_id, :normal_sms_recipients_json, :emergency_sms_recipients_json, "
+                        ":backup_sms_recipients_json, :send_normal_leads, :send_emergency_leads, "
+                        ":include_extra_fields, :include_additional_notes, :emergency_keywords_json, "
+                        ":emergency_rules_json, :notes, :created_at, :updated_at)"
+                    ),
+                    {
+                        "tenant_id": tenant["id"],
+                        "normal_sms_recipients_json": json.dumps(normal),
+                        "emergency_sms_recipients_json": "[]",
+                        "backup_sms_recipients_json": json.dumps(backup),
+                        "send_normal_leads": True,
+                        "send_emergency_leads": True,
+                        "include_extra_fields": True,
+                        "include_additional_notes": True,
+                        "emergency_keywords_json": json.dumps(DEFAULT_EMERGENCY_KEYWORDS),
+                        "emergency_rules_json": "[]",
+                        "notes": "",
+                        "created_at": now,
+                        "updated_at": now,
+                    },
+                )
+            elif normal:
+                conn.execute(
+                    text(
+                        "UPDATE tenant_notification_policies "
+                        "SET normal_sms_recipients_json = :normal_sms_recipients_json, updated_at = :updated_at "
+                        "WHERE id = :policy_id AND "
+                        "(normal_sms_recipients_json IS NULL OR normal_sms_recipients_json = '' OR normal_sms_recipients_json = '[]')"
+                    ),
+                    {
+                        "policy_id": policy_id,
+                        "normal_sms_recipients_json": json.dumps(normal),
+                        "updated_at": now,
+                    },
+                )
+
+
 def run_schema_migrations(engine, settings):
     add_missing_tenant_columns(engine)
     default_tenant_id = ensure_default_tenant(engine, settings)
     ensure_default_telephony_profiles(engine, default_tenant_id, settings)
     ensure_default_prompt_profiles(engine)
     ensure_default_intake_policies(engine)
+    ensure_default_notification_policies(engine)
     return default_tenant_id

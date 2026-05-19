@@ -45,6 +45,9 @@ class Lead(Base):
     urgency = Column(Text, nullable=False)
     extra_fields_json = Column(Text, nullable=True)
     raw_args_json = Column(Text, nullable=False)
+    priority = Column(String(32), nullable=True)
+    priority_reason = Column(Text, nullable=True)
+    classification_json = Column(Text, nullable=True)
     status = Column(String(64), nullable=False, default="submitted")
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -62,9 +65,12 @@ class Notification(Base):
     lead_id = Column(Integer, ForeignKey("leads.id"), nullable=False, index=True)
     channel = Column(String(32), nullable=False)
     to_number = Column(String(64), nullable=False)
+    recipient_type = Column(String(32), nullable=True)
     status = Column(String(64), nullable=False, default="pending")
     provider_message_sid = Column(String(128), nullable=True)
     error = Column(Text, nullable=True)
+    policy_snapshot_json = Column(Text, nullable=True)
+    attempt_number = Column(Integer, nullable=False, default=1)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
     sent_at = Column(DateTime(timezone=True), nullable=True)
 
@@ -101,6 +107,7 @@ class Tenant(Base):
     settings = relationship("TenantSettings", back_populates="tenant", uselist=False)
     telephony_profile = relationship("TenantTelephonyProfile", back_populates="tenant", uselist=False)
     intake_policy = relationship("TenantIntakePolicy", back_populates="tenant", uselist=False)
+    notification_policy = relationship("TenantNotificationPolicy", back_populates="tenant", uselist=False)
     ai_profiles = relationship("TenantAIProfile", back_populates="tenant")
     calls = relationship("Call", back_populates="tenant")
     leads = relationship("Lead", back_populates="tenant")
@@ -155,6 +162,27 @@ class TenantIntakePolicy(Base):
     updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 
     tenant = relationship("Tenant", back_populates="intake_policy")
+
+
+class TenantNotificationPolicy(Base):
+    __tablename__ = "tenant_notification_policies"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), unique=True, nullable=False, index=True)
+    normal_sms_recipients_json = Column(Text, nullable=False, default="[]")
+    emergency_sms_recipients_json = Column(Text, nullable=False, default="[]")
+    backup_sms_recipients_json = Column(Text, nullable=False, default="[]")
+    send_normal_leads = Column(Boolean, nullable=False, default=True)
+    send_emergency_leads = Column(Boolean, nullable=False, default=True)
+    include_extra_fields = Column(Boolean, nullable=False, default=True)
+    include_additional_notes = Column(Boolean, nullable=False, default=True)
+    emergency_keywords_json = Column(Text, nullable=False, default="[]")
+    emergency_rules_json = Column(Text, nullable=False, default="[]")
+    notes = Column(Text, nullable=False, default="")
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    tenant = relationship("Tenant", back_populates="notification_policy")
 
 
 class TenantSettings(Base):

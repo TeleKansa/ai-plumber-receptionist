@@ -1,10 +1,13 @@
 from dataclasses import dataclass
+import json
 import re
 from typing import Optional
 
 from storage import repository
 from workflow.intake_policy import applicable_questions, missing_extra_guidance, missing_policy_extra_fields
+from workflow.notification_policy import backup_recipients, notification_recipients, policy_snapshot
 from workflow.notifications import SmsSendResult
+from workflow.priority import classify_lead_priority
 from workflow.validation import looks_like_phone, validate_service_request_args
 
 
@@ -76,6 +79,95 @@ def _normalize_sms_result(result) -> SmsSendResult:
     return SmsSendResult(success=bool(result))
 
 
+def _json_list(value) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    if isinstance(value, str):
+        try:
+            parsed = json.loads(value or "[]")
+        except json.JSONDecodeError:
+            parsed = [part.strip() for part in value.replace("\r", "\n").replace(",", "\n").split("\n")]
+        return _json_list(parsed)
+    return []
+
+
+def _policy_with_fallback_recipient(policy: Optional[dict], plumber_phone_number: str) -> dict:
+    active_policy = dict(policy or {})
+    if not active_policy:
+        active_policy = {
+            "send_normal_leads": True,
+            "send_emergency_leads": True,
+            "include_extra_fields": True,
+            "include_additional_notes": True,
+            "normal_sms_recipients_json": "[]",
+            "emergency_sms_recipients_json": "[]",
+            "backup_sms_recipients_json": "[]",
+            "emergency_keywords_json": "[]",
+            "emergency_rules_json": "[]",
+        }
+    if plumber_phone_number and not _json_list(active_policy.get("normal_sms_recipients_json")):
+        active_policy["normal_sms_recipients_json"] = json.dumps([plumber_phone_number])
+    return active_policy
+
+
+def _notification_attempt_key(number: str) -> str:
+    return repository.normalize_phone_number(number) or number
+
+
+async def _send_notification_attempt(
+    call_sid: str,
+    lead: dict,
+    args: dict,
+    from_number: str,
+    recipient: dict,
+    policy: dict,
+    send_sms_func,
+) -> bool:
+    notification = repository.create_notification_attempt(
+        lead["id"],
+        recipient["to_number"],
+        tenant_id=lead.get("tenant_id"),
+        recipient_type=recipient.get("recipient_type") or "normal",
+        policy_snapshot=policy_snapshot(policy),
+    )
+    if notification.get("status") == "sent":
+        return True
+    sms_result = _normalize_sms_result(
+        await send_sms_func(call_sid, args, from_number, recipient["to_number"])
+    )
+    if sms_result.success:
+        repository.mark_notification_sent(notification["id"], sms_result.provider_message_sid)
+        repository.record_call_event(
+            call_sid,
+            "sms_sent",
+            {
+                "lead_id": lead["id"],
+                "notification_id": notification["id"],
+                "to_number": recipient["to_number"],
+                "recipient_type": recipient.get("recipient_type"),
+                "provider_message_sid": sms_result.provider_message_sid,
+            },
+        )
+        return True
+
+    error = sms_result.error or "SMS provider returned failure"
+    repository.mark_notification_failed(notification["id"], error)
+    repository.record_call_event(
+        call_sid,
+        "sms_failed",
+        {
+            "lead_id": lead["id"],
+            "notification_id": notification["id"],
+            "to_number": recipient["to_number"],
+            "recipient_type": recipient.get("recipient_type"),
+            "error": error,
+        },
+    )
+    return False
+
+
 def _validation_guidance(errors: dict[str, str]) -> str:
     if "issue" in errors:
         return (
@@ -126,6 +218,11 @@ async def process_service_request(
         tenant = repository.get_call_tenant(call_sid)
         resolved_tenant_id = tenant["id"] if tenant else None
     intake_policy = repository.get_intake_policy(resolved_tenant_id) if resolved_tenant_id else None
+    notification_policy = (
+        _policy_with_fallback_recipient(repository.get_notification_policy(resolved_tenant_id), plumber_phone_number)
+        if resolved_tenant_id
+        else _policy_with_fallback_recipient(None, plumber_phone_number)
+    )
 
     errors = validate_service_request_args(args, caller_text=caller_text)
     if errors:
@@ -213,22 +310,23 @@ async def process_service_request(
 
     existing_lead = repository.get_lead_by_call_sid(call_sid)
     if existing_lead:
-        notification = repository.get_notification_for_lead(existing_lead["id"])
+        notifications = repository.list_notifications_for_lead(existing_lead["id"])
+        sent_notifications = [notification for notification in notifications if notification.get("status") == "sent"]
         repository.record_call_event(
             call_sid,
             "duplicate_submit",
             {
                 "lead_id": existing_lead["id"],
-                "notification_status": notification.get("status") if notification else None,
+                "notification_status": sent_notifications[0].get("status") if sent_notifications else (notifications[0].get("status") if notifications else None),
             },
         )
         return ServiceRequestResult(
             output={
-                "success": notification is None or notification.get("status") == "sent",
+                "success": bool(sent_notifications),
                 "reason": "already_submitted",
                 "lead_saved": True,
                 "lead_id": existing_lead["id"],
-                "notification_status": notification.get("status") if notification else None,
+                "notification_status": sent_notifications[0].get("status") if sent_notifications else (notifications[0].get("status") if notifications else None),
             },
             should_hangup=True,
             closing_instructions='Say only: "Okay, you\'re all set. We\'ll call you back soon." Then stop.',
@@ -242,11 +340,25 @@ async def process_service_request(
             {"name": args.get("name"), "name_provenance": name_provenance},
         )
 
-    lead, notification = repository.create_lead_with_pending_notification(
+    classification = classify_lead_priority(args, notification_policy)
+    repository.record_call_event(
+        call_sid,
+        "priority_classified",
+        {
+            "priority": classification["priority"],
+            "priority_reason": classification["priority_reason"],
+            "classification": classification["classification"],
+        },
+        tenant_id=resolved_tenant_id,
+    )
+
+    lead = repository.create_lead(
         call_sid,
         args,
-        plumber_phone_number or "",
         tenant_id=resolved_tenant_id,
+        priority=classification["priority"],
+        priority_reason=classification["priority_reason"],
+        classification=classification["classification"],
     )
     repository.record_call_event(
         call_sid,
@@ -257,16 +369,30 @@ async def process_service_request(
             "name_provenance": name_provenance,
             "active_intake_policy_question_keys": active_question_keys,
             "extra_fields": args.get("extra_fields") or {},
+            "priority": lead.get("priority"),
+            "priority_reason": lead.get("priority_reason"),
         },
     )
 
-    if not plumber_phone_number:
-        error = "Tenant notification SMS number is not configured"
-        repository.mark_notification_failed(notification["id"], error)
+    sms_args = dict(args)
+    sms_args["priority"] = classification["priority"]
+    sms_args["priority_reason"] = classification["priority_reason"]
+    sms_args["classification"] = classification["classification"]
+
+    recipients, routing_notes = notification_recipients(notification_policy, classification["priority"])
+    if routing_notes:
+        repository.record_call_event(
+            call_sid,
+            "notification_policy_routing_note",
+            {"lead_id": lead["id"], "notes": routing_notes, "priority": classification["priority"]},
+            tenant_id=lead.get("tenant_id"),
+        )
+    if not recipients:
+        error = "Tenant notification policy has no SMS recipients for this lead priority"
         repository.record_call_event(
             call_sid,
             "notification_config_missing",
-            {"lead_id": lead["id"], "notification_id": notification["id"], "tenant_id": lead.get("tenant_id"), "error": error},
+            {"lead_id": lead["id"], "tenant_id": lead.get("tenant_id"), "error": error, "priority": classification["priority"]},
         )
         return ServiceRequestResult(
             output={
@@ -279,33 +405,53 @@ async def process_service_request(
             closing_instructions='Say only: "I\'ve captured your information. We\'ll make sure it\'s flagged for follow-up." Then stop.',
         )
 
-    sms_result = _normalize_sms_result(await send_sms_func(call_sid, args, from_number))
-    if sms_result.success:
-        repository.mark_notification_sent(notification["id"], sms_result.provider_message_sid)
-        repository.record_call_event(
+    any_sent = False
+    attempted_keys = set()
+    for recipient in recipients:
+        attempted_keys.add(_notification_attempt_key(recipient["to_number"]))
+        sent = await _send_notification_attempt(
             call_sid,
-            "sms_sent",
-            {"lead_id": lead["id"], "notification_id": notification["id"], "provider_message_sid": sms_result.provider_message_sid},
+            lead,
+            sms_args,
+            from_number,
+            recipient,
+            notification_policy,
+            send_sms_func,
         )
+        any_sent = any_sent or sent
+        if not sent:
+            for backup in backup_recipients(notification_policy, attempted_keys):
+                attempted_keys.add(_notification_attempt_key(backup["to_number"]))
+                backup_sent = await _send_notification_attempt(
+                    call_sid,
+                    lead,
+                    sms_args,
+                    from_number,
+                    backup,
+                    notification_policy,
+                    send_sms_func,
+                )
+                any_sent = any_sent or backup_sent
+
+    if any_sent:
         return ServiceRequestResult(
-            output={"success": True, "lead_saved": True, "lead_id": lead["id"]},
+            output={
+                "success": True,
+                "lead_saved": True,
+                "lead_id": lead["id"],
+                "priority": classification["priority"],
+            },
             should_hangup=True,
             closing_instructions=None,
         )
 
-    error = sms_result.error or "SMS provider returned failure"
-    repository.mark_notification_failed(notification["id"], error)
-    repository.record_call_event(
-        call_sid,
-        "sms_failed",
-        {"lead_id": lead["id"], "notification_id": notification["id"], "error": error},
-    )
     return ServiceRequestResult(
         output={
             "success": False,
             "reason": "notification_failed",
             "lead_saved": True,
             "lead_id": lead["id"],
+            "priority": classification["priority"],
         },
         should_hangup=True,
         closing_instructions='Say only: "I\'ve captured your information. We\'ll make sure it\'s flagged for follow-up." Then stop.',

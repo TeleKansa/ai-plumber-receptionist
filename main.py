@@ -25,8 +25,7 @@ from admin.routes import create_admin_router
 from config.settings import get_settings
 from storage.database import init_db
 from storage import repository
-from workflow.intake_policy import sms_extra_field_rows
-from workflow.notifications import SmsSendResult
+from workflow.notifications import SmsSendResult, build_sms_body as build_notification_sms_body
 from workflow.prompt_builder import DEFAULT_GREETING, PromptBuilder
 from workflow.service_request import process_service_request
 from workflow.sms_result import build_service_request_output
@@ -350,24 +349,24 @@ async def voice(request: Request):
 # SMS
 # ---------------------------------------------------------------------------
 
-def build_sms_body(info: dict, from_number: str, intake_policy: Optional[dict] = None) -> str:
-    body = (
-        f"NEW PLUMBING LEAD\n\n"
-        f"Name: {info.get('name',     'N/A')}\n"
-        f"Phone: {info.get('callback', from_number)}\n"
-        f"Issue: {info.get('issue',   'N/A')}\n"
-        f"Urgency: {info.get('urgency', 'N/A')}\n"
-        f"Address: {info.get('address', 'N/A')}"
-    )
-    extra_rows = sms_extra_field_rows(intake_policy, info)
-    if extra_rows:
-        extra_text = "\n".join(f"{label}: {value}" for label, value in extra_rows)
-        body = f"{body}\n\nExtra:\n{extra_text}"
-    return body
+def build_sms_body(
+    info: dict,
+    from_number: str,
+    intake_policy: Optional[dict] = None,
+    notification_policy: Optional[dict] = None,
+) -> str:
+    return build_notification_sms_body(info, from_number, intake_policy, notification_policy)
 
 
-async def send_sms(call_sid: str, info: dict, from_number: str, to_number: str, intake_policy: Optional[dict] = None) -> SmsSendResult:
-    body = build_sms_body(info, from_number, intake_policy)
+async def send_sms(
+    call_sid: str,
+    info: dict,
+    from_number: str,
+    to_number: str,
+    intake_policy: Optional[dict] = None,
+    notification_policy: Optional[dict] = None,
+) -> SmsSendResult:
+    body = build_sms_body(info, from_number, intake_policy, notification_policy)
     log.info(f"[{call_sid}] Sending SMS to {to_number}:\n{body}")
     try:
         message = await asyncio.to_thread(
@@ -608,8 +607,8 @@ async def media_stream(ws: WebSocket):
 
                     session = sessions.get(call_sid, {})
                     log.info(f"[{call_sid}] submit_service_request: {args}")
-                    notification_sms_number = session.get("notification_sms_number") or ""
                     intake_policy = session.get("intake_policy")
+                    notification_policy = repository.get_notification_policy(session.get("tenant_id")) if session.get("tenant_id") else None
                     repository.record_call_event(
                         call_sid,
                         "submit_service_request_attempt",
@@ -622,14 +621,21 @@ async def media_stream(ws: WebSocket):
                         },
                     )
 
-                    async def send_tenant_sms(send_call_sid: str, send_args: dict, send_from_number: str):
-                        return await send_sms(send_call_sid, send_args, send_from_number, notification_sms_number, intake_policy)
+                    async def send_tenant_sms(send_call_sid: str, send_args: dict, send_from_number: str, send_to_number: str):
+                        return await send_sms(
+                            send_call_sid,
+                            send_args,
+                            send_from_number,
+                            send_to_number,
+                            intake_policy,
+                            notification_policy,
+                        )
 
                     result = await process_service_request(
                         call_sid,
                         args,
                         session.get("from_number", "unknown"),
-                        notification_sms_number,
+                        session.get("notification_sms_number", ""),
                         send_tenant_sms,
                         caller_text=" ".join(session.get("caller_text_parts", [])),
                         tenant_id=session.get("tenant_id"),

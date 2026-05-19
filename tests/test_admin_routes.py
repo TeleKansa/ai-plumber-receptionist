@@ -69,6 +69,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn(f'href="/admin/tenants/{tenant["id"]}"', tenants_response.text)
         self.assertIn(f'href="/admin/tenants/{tenant["id"]}/prompt"', tenants_response.text)
         self.assertIn(f'href="/admin/tenants/{tenant["id"]}/intake-policy"', tenants_response.text)
+        self.assertIn(f'href="/admin/tenants/{tenant["id"]}/notification-policy"', tenants_response.text)
         self.assertIn("Details", tenants_response.text)
         self.assertEqual(detail_response.status_code, 200)
         self.assertIn("Back to tenants", detail_response.text)
@@ -79,6 +80,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("Phone Numbers", detail_response.text)
         self.assertIn("Prompt/persona settings", detail_response.text)
         self.assertIn("Intake policy", detail_response.text)
+        self.assertIn("Notification policy", detail_response.text)
 
     def test_newly_created_tenant_is_clickable_and_has_prompt_profile(self):
         create_response = self.client.post(

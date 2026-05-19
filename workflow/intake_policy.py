@@ -306,6 +306,10 @@ def _policy_key_list(policy: Optional[dict], field: str) -> set[str]:
 
 
 def sms_extra_field_rows(policy: Optional[dict], args: Optional[dict]) -> list[tuple[str, str]]:
+    return [(label, value) for _, label, value in sms_extra_field_rows_with_keys(policy, args)]
+
+
+def sms_extra_field_rows_with_keys(policy: Optional[dict], args: Optional[dict]) -> list[tuple[str, str, str]]:
     fields = _extra_fields(args)
     include_keys = _policy_key_list(policy, "sms_include_extra_fields_json")
     rows = []
@@ -319,7 +323,7 @@ def sms_extra_field_rows(policy: Optional[dict], args: Optional[dict]) -> list[t
         value = str(fields.get(key) or "").strip()
         if not value:
             continue
-        rows.append((question["label"], value))
+        rows.append((key, question["label"], value))
         seen.add(key)
     return rows
 

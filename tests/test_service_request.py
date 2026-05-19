@@ -37,8 +37,8 @@ class FakeSmsSender:
         self.calls = []
         self.lead_exists_during_send = False
 
-    async def __call__(self, call_sid, args, from_number):
-        self.calls.append((call_sid, args, from_number))
+    async def __call__(self, call_sid, args, from_number, to_number=None):
+        self.calls.append((call_sid, args, from_number, to_number))
         self.lead_exists_during_send = repository.get_lead_by_call_sid(call_sid) is not None
         if self.success:
             return SmsSendResult(success=True, provider_message_sid="SM_TEST")

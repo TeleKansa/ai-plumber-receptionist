@@ -45,6 +45,7 @@ class TenantTests(unittest.TestCase):
         active_prompt = repository.get_active_prompt_profile(tenant["id"])
         telephony_profile = repository.get_telephony_profile(tenant["id"])
         intake_policy = repository.get_intake_policy(tenant["id"])
+        notification_policy = repository.get_notification_policy(tenant["id"])
 
         self.assertEqual(tenant["name"], "Default Plumbing")
         self.assertEqual(tenant["status"], "live")
@@ -60,6 +61,9 @@ class TenantTests(unittest.TestCase):
         self.assertIsNotNone(intake_policy)
         self.assertTrue(intake_policy["enabled"])
         self.assertEqual(extra_questions(intake_policy)[0]["key"], "additional_notes")
+        self.assertIsNotNone(notification_policy)
+        self.assertIn("+15557654321", notification_policy["normal_sms_recipients_json"])
+        self.assertTrue(notification_policy["send_emergency_leads"])
 
     def test_new_tenant_defaults_to_onboarding_and_phone_not_live(self):
         init_db(tenant_settings(self.tmpdir.name))

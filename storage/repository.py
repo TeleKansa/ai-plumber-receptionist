@@ -12,6 +12,7 @@ from storage.models import (
     Tenant,
     TenantAIProfile,
     TenantIntakePolicy,
+    TenantNotificationPolicy,
     TenantPhoneNumber,
     TenantSettings,
     TenantTelephonyProfile,
@@ -28,6 +29,18 @@ def normalize_phone_number(value: Optional[str]) -> str:
     if len(digits) == 10:
         return f"1{digits}"
     return digits
+
+
+def _json_text_list(value: Optional[str]) -> list[str]:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [str(item).strip() for item in parsed if str(item).strip()]
 
 
 def _normalize_phone(value: Optional[str]) -> str:
@@ -94,6 +107,25 @@ def _intake_policy_summary(policy: TenantIntakePolicy) -> dict:
     }
 
 
+def _notification_policy_summary(policy: TenantNotificationPolicy) -> dict:
+    return {
+        "id": policy.id,
+        "tenant_id": policy.tenant_id,
+        "normal_sms_recipients_json": policy.normal_sms_recipients_json,
+        "emergency_sms_recipients_json": policy.emergency_sms_recipients_json,
+        "backup_sms_recipients_json": policy.backup_sms_recipients_json,
+        "send_normal_leads": policy.send_normal_leads,
+        "send_emergency_leads": policy.send_emergency_leads,
+        "include_extra_fields": policy.include_extra_fields,
+        "include_additional_notes": policy.include_additional_notes,
+        "emergency_keywords_json": policy.emergency_keywords_json,
+        "emergency_rules_json": policy.emergency_rules_json,
+        "notes": policy.notes,
+        "created_at": policy.created_at,
+        "updated_at": policy.updated_at,
+    }
+
+
 def _prompt_profile_summary(profile: TenantAIProfile) -> dict:
     return {
         "id": profile.id,
@@ -147,6 +179,9 @@ def _lead_summary(lead: Lead) -> dict:
         "extra_fields": extra_fields if isinstance(extra_fields, dict) else {},
         "extra_fields_json": lead.extra_fields_json,
         "raw_args_json": lead.raw_args_json,
+        "priority": lead.priority,
+        "priority_reason": lead.priority_reason,
+        "classification_json": lead.classification_json,
         "status": lead.status,
         "created_at": lead.created_at,
     }
@@ -159,9 +194,12 @@ def _notification_summary(notification: Notification) -> dict:
         "lead_id": notification.lead_id,
         "channel": notification.channel,
         "to_number": notification.to_number,
+        "recipient_type": notification.recipient_type,
         "status": notification.status,
         "provider_message_sid": notification.provider_message_sid,
         "error": notification.error,
+        "policy_snapshot_json": notification.policy_snapshot_json,
+        "attempt_number": notification.attempt_number,
         "created_at": notification.created_at,
         "sent_at": notification.sent_at,
     }
@@ -266,6 +304,40 @@ def _create_default_intake_policy(db, tenant: Tenant) -> TenantIntakePolicy:
     return policy
 
 
+def _create_default_notification_policy(db, tenant: Tenant) -> TenantNotificationPolicy:
+    settings = tenant.settings
+    normal = [settings.notification_sms_number] if settings and settings.notification_sms_number else []
+    backup = [settings.backup_notification_sms_number] if settings and settings.backup_notification_sms_number else []
+    policy = TenantNotificationPolicy(
+        tenant_id=tenant.id,
+        normal_sms_recipients_json=json.dumps(normal),
+        emergency_sms_recipients_json="[]",
+        backup_sms_recipients_json=json.dumps(backup),
+        send_normal_leads=True,
+        send_emergency_leads=True,
+        include_extra_fields=True,
+        include_additional_notes=True,
+        emergency_keywords_json=json.dumps([
+            "active leak",
+            "burst pipe",
+            "cannot shut",
+            "can't shut",
+            "cant shut",
+            "flooding",
+            "sewage",
+            "sewer backup",
+            "water is still coming out",
+            "water still coming out",
+            "water still running",
+        ]),
+        emergency_rules_json="[]",
+        notes="",
+    )
+    db.add(policy)
+    db.flush()
+    return policy
+
+
 def _get_or_create_telephony_profile(db, tenant: Tenant) -> TenantTelephonyProfile:
     if tenant.telephony_profile:
         return tenant.telephony_profile
@@ -276,6 +348,12 @@ def _get_or_create_intake_policy(db, tenant: Tenant) -> TenantIntakePolicy:
     if tenant.intake_policy:
         return tenant.intake_policy
     return _create_default_intake_policy(db, tenant)
+
+
+def _get_or_create_notification_policy(db, tenant: Tenant) -> TenantNotificationPolicy:
+    if tenant.notification_policy:
+        return tenant.notification_policy
+    return _create_default_notification_policy(db, tenant)
 
 
 def get_telephony_profile(tenant_id: int) -> Optional[dict]:
@@ -292,6 +370,47 @@ def get_intake_policy(tenant_id: int) -> Optional[dict]:
         if tenant is None:
             return None
         return _intake_policy_summary(_get_or_create_intake_policy(db, tenant))
+
+
+def get_notification_policy(tenant_id: int) -> Optional[dict]:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+        if tenant is None:
+            return None
+        return _notification_policy_summary(_get_or_create_notification_policy(db, tenant))
+
+
+def update_notification_policy(
+    tenant_id: int,
+    normal_sms_recipients: Optional[list[str]] = None,
+    emergency_sms_recipients: Optional[list[str]] = None,
+    backup_sms_recipients: Optional[list[str]] = None,
+    send_normal_leads: bool = True,
+    send_emergency_leads: bool = True,
+    include_extra_fields: bool = True,
+    include_additional_notes: bool = True,
+    emergency_keywords: Optional[list[str]] = None,
+    emergency_rules: Optional[list] = None,
+    notes: str = "",
+) -> Optional[dict]:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.id == tenant_id).one_or_none()
+        if tenant is None:
+            return None
+        policy = _get_or_create_notification_policy(db, tenant)
+        policy.normal_sms_recipients_json = json.dumps(normal_sms_recipients or [])
+        policy.emergency_sms_recipients_json = json.dumps(emergency_sms_recipients or [])
+        policy.backup_sms_recipients_json = json.dumps(backup_sms_recipients or [])
+        policy.send_normal_leads = bool(send_normal_leads)
+        policy.send_emergency_leads = bool(send_emergency_leads)
+        policy.include_extra_fields = bool(include_extra_fields)
+        policy.include_additional_notes = bool(include_additional_notes)
+        policy.emergency_keywords_json = json.dumps(emergency_keywords or [])
+        policy.emergency_rules_json = json.dumps(emergency_rules or [])
+        policy.notes = notes.strip()
+        policy.updated_at = utcnow()
+        db.flush()
+        return _notification_policy_summary(policy)
 
 
 def update_intake_policy(
@@ -580,6 +699,7 @@ def create_tenant(name: str, slug: str, business_name: str, greeting: str, notif
         db.flush()
         _create_default_telephony_profile(db, tenant)
         _create_default_intake_policy(db, tenant)
+        _create_default_notification_policy(db, tenant)
         _create_default_prompt_profile(db, tenant)
         return _tenant_summary(tenant)
 
@@ -597,11 +717,23 @@ def update_tenant_settings(tenant_id: int, business_name: str, greeting: str, no
             settings = TenantSettings(tenant_id=tenant.id, business_name=tenant.name, greeting="Plumbing office, what's going on?", active=True)
             db.add(settings)
             db.flush()
+        old_notification_number = settings.notification_sms_number or ""
+        old_backup_number = settings.backup_notification_sms_number or ""
         settings.business_name = business_name.strip() or settings.business_name
         settings.greeting = greeting.strip() or settings.greeting
         settings.notification_sms_number = notification_sms_number.strip()
         settings.backup_notification_sms_number = backup_notification_sms_number.strip() or None
         settings.active = tenant.status not in {"paused", "archived"}
+        policy = _get_or_create_notification_policy(db, tenant)
+        current_normal_recipients = _json_text_list(policy.normal_sms_recipients_json)
+        old_normal_recipients = [old_notification_number] if old_notification_number else []
+        if not current_normal_recipients or current_normal_recipients == old_normal_recipients:
+            policy.normal_sms_recipients_json = json.dumps([notification_sms_number.strip()] if notification_sms_number.strip() else [])
+        current_backup_recipients = _json_text_list(policy.backup_sms_recipients_json)
+        old_backup_recipients = [old_backup_number] if old_backup_number else []
+        if not current_backup_recipients or current_backup_recipients == old_backup_recipients:
+            policy.backup_sms_recipients_json = json.dumps([backup_notification_sms_number.strip()] if backup_notification_sms_number.strip() else [])
+        policy.updated_at = utcnow()
         db.flush()
         return _tenant_summary(tenant)
 
@@ -743,6 +875,12 @@ def get_lead_by_call_sid(call_sid: str) -> Optional[dict]:
         return _lead_summary(lead) if lead else None
 
 
+def get_lead(lead_id: int) -> Optional[dict]:
+    with session_scope() as db:
+        lead = db.query(Lead).filter(Lead.id == lead_id).one_or_none()
+        return _lead_summary(lead) if lead else None
+
+
 def get_notification_for_lead(lead_id: int, channel: str = "sms") -> Optional[dict]:
     with session_scope() as db:
         notification = (
@@ -754,33 +892,38 @@ def get_notification_for_lead(lead_id: int, channel: str = "sms") -> Optional[di
         return _notification_summary(notification) if notification else None
 
 
-def create_lead_with_pending_notification(call_sid: str, args: dict, to_number: str, tenant_id: Optional[int] = None) -> tuple[dict, dict]:
+def get_notification(notification_id: int) -> Optional[dict]:
+    with session_scope() as db:
+        notification = db.query(Notification).filter(Notification.id == notification_id).one_or_none()
+        return _notification_summary(notification) if notification else None
+
+
+def list_notifications_for_lead(lead_id: int, channel: str = "sms") -> list[dict]:
+    with session_scope() as db:
+        notifications = (
+            db.query(Notification)
+            .filter(Notification.lead_id == lead_id, Notification.channel == channel)
+            .order_by(Notification.created_at)
+            .all()
+        )
+        return [_notification_summary(notification) for notification in notifications]
+
+
+def create_lead(
+    call_sid: str,
+    args: dict,
+    tenant_id: Optional[int] = None,
+    priority: str = "normal",
+    priority_reason: str = "",
+    classification: Optional[dict] = None,
+) -> dict:
     raw_args_json = json.dumps(args, default=str)
     with session_scope() as db:
         call = _get_call(db, call_sid)
         lead_tenant_id = tenant_id or (call.tenant_id if call and call.tenant_id else _default_tenant(db).id)
         existing = db.query(Lead).filter(Lead.call_sid == call_sid).one_or_none()
         if existing is not None:
-            notification = (
-                db.query(Notification)
-                .filter(
-                    Notification.lead_id == existing.id,
-                    Notification.channel == "sms",
-                    Notification.to_number == to_number,
-                )
-                .one_or_none()
-            )
-            if notification is None:
-                notification = Notification(
-                    tenant_id=existing.tenant_id or lead_tenant_id,
-                    lead_id=existing.id,
-                    channel="sms",
-                    to_number=to_number,
-                    status="pending",
-                )
-                db.add(notification)
-                db.flush()
-            return _lead_summary(existing), _notification_summary(notification)
+            return _lead_summary(existing)
 
         lead = Lead(
             tenant_id=lead_tenant_id,
@@ -793,21 +936,71 @@ def create_lead_with_pending_notification(call_sid: str, args: dict, to_number: 
             urgency=str(args.get("urgency", "")).strip(),
             extra_fields_json=json.dumps(args.get("extra_fields") or {}, default=str),
             raw_args_json=raw_args_json,
+            priority=priority,
+            priority_reason=priority_reason,
+            classification_json=json.dumps(classification or {}, default=str),
             status="submitted",
         )
         db.add(lead)
         db.flush()
+        return _lead_summary(lead)
 
+
+def create_notification_attempt(
+    lead_id: int,
+    to_number: str,
+    tenant_id: Optional[int] = None,
+    recipient_type: str = "normal",
+    policy_snapshot: Optional[dict] = None,
+    status: str = "pending",
+) -> dict:
+    with session_scope() as db:
+        lead = db.query(Lead).filter(Lead.id == lead_id).one()
+        notification_tenant_id = tenant_id or lead.tenant_id
+        existing = (
+            db.query(Notification)
+            .filter(
+                Notification.lead_id == lead_id,
+                Notification.channel == "sms",
+                Notification.to_number == to_number,
+            )
+            .one_or_none()
+        )
+        if existing is not None:
+            if existing.status == "sent":
+                return _notification_summary(existing)
+            existing.recipient_type = recipient_type or existing.recipient_type
+            existing.policy_snapshot_json = json.dumps(policy_snapshot or {}, default=str)
+            existing.status = status
+            existing.error = None if status == "pending" else existing.error
+            existing.attempt_number = (existing.attempt_number or 1) + 1
+            db.flush()
+            return _notification_summary(existing)
         notification = Notification(
-            tenant_id=lead_tenant_id,
+            tenant_id=notification_tenant_id,
             lead_id=lead.id,
             channel="sms",
             to_number=to_number,
-            status="pending",
+            recipient_type=recipient_type,
+            status=status,
+            policy_snapshot_json=json.dumps(policy_snapshot or {}, default=str),
+            attempt_number=1,
         )
         db.add(notification)
         db.flush()
-        return _lead_summary(lead), _notification_summary(notification)
+        return _notification_summary(notification)
+
+
+def create_lead_with_pending_notification(call_sid: str, args: dict, to_number: str, tenant_id: Optional[int] = None) -> tuple[dict, dict]:
+    lead = create_lead(call_sid, args, tenant_id=tenant_id)
+    notification = create_notification_attempt(
+        lead["id"],
+        to_number,
+        tenant_id=lead.get("tenant_id"),
+        recipient_type="normal",
+        policy_snapshot={},
+    )
+    return lead, notification
 
 
 def mark_notification_sent(notification_id: int, provider_message_sid: Optional[str]) -> dict:
@@ -852,6 +1045,15 @@ def list_recent_leads(limit: int = 25, tenant_id: Optional[int] = None) -> list[
 def list_recent_notifications(limit: int = 25, tenant_id: Optional[int] = None) -> list[dict]:
     with session_scope() as db:
         query = db.query(Notification)
+        if tenant_id is not None:
+            query = query.filter(Notification.tenant_id == tenant_id)
+        notifications = query.order_by(desc(Notification.created_at)).limit(limit).all()
+        return [_notification_summary(notification) for notification in notifications]
+
+
+def list_failed_notifications(limit: int = 25, tenant_id: Optional[int] = None) -> list[dict]:
+    with session_scope() as db:
+        query = db.query(Notification).filter(Notification.status == "failed")
         if tenant_id is not None:
             query = query.filter(Notification.tenant_id == tenant_id)
         notifications = query.order_by(desc(Notification.created_at)).limit(limit).all()

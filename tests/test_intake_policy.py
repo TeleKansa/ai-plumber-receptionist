@@ -44,8 +44,8 @@ class FakeSmsSender:
     def __init__(self):
         self.calls = []
 
-    async def __call__(self, call_sid, args, from_number):
-        self.calls.append((call_sid, args, from_number))
+    async def __call__(self, call_sid, args, from_number, to_number=None):
+        self.calls.append((call_sid, args, from_number, to_number))
         return SmsSendResult(success=True, provider_message_sid="SM_INTAKE")
 
 
