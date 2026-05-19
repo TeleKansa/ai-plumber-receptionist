@@ -227,6 +227,52 @@ class IntakePolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(lead["extra_fields"]["additional_notes"], "gate code is 1234")
         self.assertIn("Additional notes: gate code is 1234", build_sms_body(args, "+19135550123", policy))
 
+    async def test_one_shot_service_request_with_early_extra_values_succeeds(self):
+        tenant = repository.get_default_tenant()
+        policy = repository.update_intake_policy(
+            tenant["id"],
+            extra_questions=[
+                property_role_question("ask_once"),
+                DEFAULT_ADDITIONAL_NOTES_QUESTION,
+            ],
+        )
+        args = {
+            "name": "Sam",
+            "issue": "Kitchen sink leaking underneath",
+            "urgency": "Water still coming out but caller shut it off",
+            "address": "6100 West 120th Street, Overland Park",
+            "callback": "732-789-0675",
+            "extra_fields": {
+                "property_role": "renting",
+                "additional_notes": "dog in backyard",
+            },
+        }
+        repository.create_or_update_call("CALL_ONE_SHOT", "+17327890675", "+15551234567", tenant_id=tenant["id"])
+        sender = FakeSmsSender()
+
+        result = await process_service_request(
+            "CALL_ONE_SHOT",
+            args,
+            "+17327890675",
+            "+15557654321",
+            sender,
+            caller_text=(
+                "Hi, my name is Sam. My kitchen sink is leaking underneath. "
+                "Water is still coming out but I shut it off. The address is 6100 West 120th Street "
+                "in Overland Park. This number is good. I'm renting. There's a dog in the backyard."
+            ),
+            tenant_id=tenant["id"],
+        )
+
+        self.assertTrue(result.output["success"])
+        self.assertEqual(len(sender.calls), 1)
+        lead = repository.get_lead_by_call_sid("CALL_ONE_SHOT")
+        self.assertEqual(lead["extra_fields"]["property_role"], "renting")
+        self.assertEqual(lead["extra_fields"]["additional_notes"], "dog in backyard")
+        body = build_sms_body(args, "+17327890675", policy)
+        self.assertIn("Homeowner or renter: renting", body)
+        self.assertIn("Additional notes: dog in backyard", body)
+
     async def test_additional_notes_none_after_caller_response_allows_submit(self):
         tenant = repository.get_default_tenant()
         args = dict(BASE_ARGS)

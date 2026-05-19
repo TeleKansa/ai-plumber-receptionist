@@ -1,10 +1,11 @@
 from dataclasses import dataclass
+import re
 from typing import Optional
 
 from storage import repository
 from workflow.intake_policy import applicable_questions, missing_extra_guidance, missing_policy_extra_fields
 from workflow.notifications import SmsSendResult
-from workflow.validation import validate_service_request_args
+from workflow.validation import looks_like_phone, validate_service_request_args
 
 
 @dataclass(frozen=True)
@@ -12,6 +13,59 @@ class ServiceRequestResult:
     output: dict
     should_hangup: bool
     closing_instructions: Optional[str] = None
+
+
+CALLBACK_ALIAS_VALUES = {
+    "call me at this number",
+    "call me back at this number",
+    "call me back on this number",
+    "caller number",
+    "current number",
+    "my number",
+    "number on file",
+    "same number",
+    "the number im calling from",
+    "the number i m calling from",
+    "the number i'm calling from",
+    "this number",
+    "this number is fine",
+    "this number is good",
+    "use my number",
+    "use this number",
+    "yes this number",
+}
+
+
+def _normalize_words(value: object) -> str:
+    text = str(value or "").strip().lower()
+    text = text.replace("\u2019", "'")
+    text = re.sub(r"[^a-z0-9']+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _is_callback_alias(value: object) -> bool:
+    normalized = _normalize_words(value)
+    if normalized in CALLBACK_ALIAS_VALUES:
+        return True
+    return (
+        "this number" in normalized
+        and any(word in normalized for word in {"good", "fine", "works", "callback", "call"})
+    )
+
+
+def _normalize_callback_alias(args: dict, from_number: str) -> tuple[dict, Optional[dict]]:
+    normalized_args = dict(args or {})
+    submitted_callback = normalized_args.get("callback")
+    if not _is_callback_alias(submitted_callback):
+        return normalized_args, None
+    if not looks_like_phone(from_number):
+        return normalized_args, None
+    normalized_args["callback"] = from_number
+    return normalized_args, {
+        "submitted_callback": submitted_callback,
+        "normalized_callback": from_number,
+        "source": "caller_from_number",
+    }
 
 
 def _normalize_sms_result(result) -> SmsSendResult:
@@ -23,6 +77,22 @@ def _normalize_sms_result(result) -> SmsSendResult:
 
 
 def _validation_guidance(errors: dict[str, str]) -> str:
+    if "issue" in errors:
+        return (
+            'Ask exactly one calm question, then stop and wait: "What\'s going on with the plumbing?" '
+            'Do not say "I need to know" and do not repeat yourself.'
+        )
+    if "urgency" in errors:
+        return (
+            'Ask exactly one calm question, then stop and wait: "Is water still coming out or flooding right now?"'
+        )
+    if "address" in errors:
+        return 'Ask exactly one calm question, then stop and wait: "What\'s the service address?"'
+    if "callback" in errors:
+        return (
+            'Ask exactly one calm question, then stop and wait: "Is this number good for callback, '
+            'or is there a better number?" If they confirm this number, submit the caller phone number, not the phrase.'
+        )
     if "name" in errors:
         return "Ask exactly one question: Could I get your name? A first name is enough. Do not ask for last name."
     return (
@@ -42,6 +112,15 @@ async def process_service_request(
     tenant_id: Optional[int] = None,
     intake_state: Optional[dict] = None,
 ):
+    args, callback_alias_payload = _normalize_callback_alias(args, from_number)
+    if callback_alias_payload:
+        repository.record_call_event(
+            call_sid,
+            "callback_alias_normalized",
+            callback_alias_payload,
+            tenant_id=tenant_id,
+        )
+
     resolved_tenant_id = tenant_id
     if resolved_tenant_id is None:
         tenant = repository.get_call_tenant(call_sid)
@@ -64,6 +143,7 @@ async def process_service_request(
                 "caller_text": caller_text,
                 "intake_policy_id": intake_policy.get("id") if intake_policy else None,
                 "guidance": guidance,
+                "next_question_key": next_field,
             },
         )
         return ServiceRequestResult(
@@ -72,6 +152,7 @@ async def process_service_request(
                 "reason": "validation_failed",
                 "missing_fields": list(errors.keys()),
                 "errors": errors,
+                "next_question_key": next_field,
                 "guidance": guidance,
             },
             should_hangup=False,

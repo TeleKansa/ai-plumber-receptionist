@@ -88,6 +88,19 @@ class TenantTests(unittest.TestCase):
         self.assertEqual(repository.normalize_phone_number("(913) 555-1234"), expected)
         self.assertEqual(repository.normalize_phone_number("913-555-1234"), expected)
 
+    def test_initial_response_diagnostic_payload_includes_reason(self):
+        response_create = main.build_initial_greeting_response("Plumbing office, what's going on?")
+        payload = main.response_create_event_payload(
+            "initial_greeting",
+            response_create,
+            {"last_response_create_reason": "previous", "caller_spoke_since_initial_greeting": False},
+        )
+
+        self.assertEqual(response_create["type"], "response.create")
+        self.assertEqual(payload["reason"], "initial_greeting")
+        self.assertIn("Do not add a second question", payload["instructions"])
+        self.assertEqual(payload["previous_response_create_reason"], "previous")
+
     def test_startup_migration_backfills_existing_call_rows(self):
         with database.engine.begin() as conn:
             conn.execute(

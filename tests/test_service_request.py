@@ -200,6 +200,78 @@ class ServiceRequestTests(unittest.IsolatedAsyncioTestCase):
         leads = [lead for lead in repository.list_recent_leads() if lead["call_sid"] == "CALL_DUP"]
         self.assertEqual(len(leads), 1)
 
+    async def test_callback_alias_is_normalized_to_caller_number(self):
+        repository.create_or_update_call("CALL_CALLBACK_ALIAS", "+17327890675", "+19135550124")
+        sender = FakeSmsSender(success=True)
+        args = dict(VALID_ARGS)
+        args["callback"] = "this number is good"
+
+        result = await process_service_request(
+            "CALL_CALLBACK_ALIAS",
+            args,
+            "+17327890675",
+            "+19135559999",
+            sender,
+            caller_text=VALID_CALLER_TEXT,
+        )
+
+        self.assertTrue(result.output["success"])
+        self.assertEqual(len(sender.calls), 1)
+        lead = repository.get_lead_by_call_sid("CALL_CALLBACK_ALIAS")
+        self.assertEqual(lead["callback"], "+17327890675")
+        self.assertEqual(sender.calls[0][1]["callback"], "+17327890675")
+        events = [event for event in repository.list_recent_call_events() if event["call_sid"] == "CALL_CALLBACK_ALIAS"]
+        self.assertIn("callback_alias_normalized", {event["event_type"] for event in events})
+
+    async def test_callback_alias_without_caller_number_fails_validation(self):
+        repository.create_or_update_call("CALL_CALLBACK_ALIAS_FAIL", "unknown", "+19135550124")
+        sender = FakeSmsSender(success=True)
+        args = dict(VALID_ARGS)
+        args["callback"] = "this number is good"
+
+        result = await process_service_request(
+            "CALL_CALLBACK_ALIAS_FAIL",
+            args,
+            "unknown",
+            "+19135559999",
+            sender,
+            caller_text=VALID_CALLER_TEXT,
+        )
+
+        self.assertFalse(result.output["success"])
+        self.assertEqual(result.output["reason"], "validation_failed")
+        self.assertEqual(result.output["next_question_key"], "callback")
+        self.assertIn("callback", result.output["missing_fields"])
+        self.assertEqual(sender.calls, [])
+        self.assertIsNone(repository.get_lead_by_call_sid("CALL_CALLBACK_ALIAS_FAIL"))
+
+    async def test_validation_guidance_returns_one_next_question(self):
+        repository.create_or_update_call("CALL_GUIDANCE_ONE", "+19135550123", "+19135550124")
+        sender = FakeSmsSender(success=True)
+        args = {
+            "issue": "",
+            "urgency": "",
+            "address": "",
+            "callback": "",
+            "name": "",
+        }
+
+        result = await process_service_request(
+            "CALL_GUIDANCE_ONE",
+            args,
+            "+19135550123",
+            "+19135559999",
+            sender,
+            caller_text="",
+        )
+
+        self.assertFalse(result.output["success"])
+        self.assertEqual(result.output["missing_fields"], ["issue"])
+        self.assertEqual(result.output["next_question_key"], "issue")
+        self.assertIn("What's going on with the plumbing?", result.output["guidance"])
+        self.assertNotIn("service address", result.output["guidance"].lower())
+        self.assertEqual(sender.calls, [])
+
     async def test_invalid_submit_followed_by_valid_submit_sends_one_sms_total(self):
         repository.create_or_update_call("CALL_RETRY", "+19135550123", "+19135550124")
         sender = FakeSmsSender(success=True)

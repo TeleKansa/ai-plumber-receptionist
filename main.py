@@ -89,7 +89,10 @@ TOOLS = [
                 "issue":    {"type": "string", "description": "Plumbing problem description"},
                 "urgency":  {"type": "string", "description": "Urgency — active leak/flooding or not"},
                 "address":  {"type": "string", "description": "Full service address"},
-                "callback": {"type": "string", "description": "Callback phone number"},
+                "callback": {
+                    "type": "string",
+                    "description": "Callback phone number. If the caller confirms 'this number is good' or similar, submit the actual caller phone number, not the phrase.",
+                },
                 "name":     {"type": "string", "description": "Customer name"},
                 "extra_fields": {
                     "type": "object",
@@ -118,6 +121,48 @@ def build_session_update(
         "type": "session.update",
         "session": session,
     }
+
+
+def build_initial_greeting_response(greeting_text: str) -> dict:
+    return {
+        "type": "response.create",
+        "response": {
+            "instructions": (
+                f'Say only: "{greeting_text}" Then stop. '
+                "Do not add a second question. Do not repeat yourself. Wait for the caller."
+            ),
+        },
+    }
+
+
+def _event_text(value: object, limit: int = 800) -> str:
+    text = str(value or "")
+    return text if len(text) <= limit else f"{text[:limit]}..."
+
+
+def response_create_event_payload(reason: str, response_create: dict, session: dict) -> dict:
+    response = response_create.get("response") or {}
+    instructions = response.get("instructions") or ""
+    return {
+        "reason": reason,
+        "has_response_instructions": bool(instructions),
+        "instructions": _event_text(instructions),
+        "caller_spoke_since_initial_greeting": bool(session.get("caller_spoke_since_initial_greeting")),
+        "first_caller_speech_started": bool(session.get("first_caller_speech_started")),
+        "previous_response_create_reason": session.get("last_response_create_reason"),
+        "complete": bool(session.get("complete")),
+    }
+
+
+def response_create_reason_for_service_result(output: dict, should_hangup: bool) -> str:
+    if should_hangup:
+        return "closing"
+    reason = output.get("reason")
+    if reason == "validation_failed":
+        return "validation_followup"
+    if reason in {"intake_policy_missing_extra_fields", "intake_policy_unanswered_extra_field"}:
+        return "intake_missing_extra"
+    return "other"
 
 # ---------------------------------------------------------------------------
 # Startup / health
@@ -380,6 +425,16 @@ async def media_stream(ws: WebSocket):
         assistant_transcript = ""
         caller_transcript = ""
 
+        async def send_response_create(reason: str, response_create: dict):
+            session = sessions.setdefault(call_sid, {})
+            payload = response_create_event_payload(reason, response_create, session)
+            if reason == "initial_greeting":
+                session["initial_greeting_sent_at"] = asyncio.get_running_loop().time()
+                session["caller_spoke_since_initial_greeting"] = False
+            repository.record_call_event(call_sid, "response_create_sent", payload)
+            session["last_response_create_reason"] = reason
+            await oai_ws.send(json.dumps(response_create))
+
         async for raw in oai_ws:
             evt   = json.loads(raw)
             etype = evt.get("type", "")
@@ -409,7 +464,21 @@ async def media_stream(ws: WebSocket):
             elif etype == "response.output_audio_transcript.done":
                 transcript = evt.get("transcript") or assistant_transcript
                 if transcript.strip():
-                    log.info(f"[{call_sid}] AI said: {transcript.strip()}")
+                    clean_transcript = transcript.strip()
+                    log.info(f"[{call_sid}] AI said: {clean_transcript}")
+                    session = sessions.get(call_sid, {})
+                    repository.record_call_event(
+                        call_sid,
+                        "assistant_transcript",
+                        {
+                            "transcript": clean_transcript,
+                            "response_create_reason": session.get("last_response_create_reason"),
+                            "caller_spoke_since_initial_greeting": bool(
+                                session.get("caller_spoke_since_initial_greeting")
+                            ),
+                            "first_caller_speech_started": bool(session.get("first_caller_speech_started")),
+                        },
+                    )
                 assistant_transcript = ""
 
             elif etype == "response.output_audio.done":
@@ -434,6 +503,8 @@ async def media_stream(ws: WebSocket):
                     log.info(f"[{call_sid}] Caller said: {clean_transcript}")
                     if call_sid:
                         session = sessions.setdefault(call_sid, {})
+                        if session.get("greeting_sent"):
+                            session["caller_spoke_since_initial_greeting"] = True
                         caller_text_parts = session.setdefault("caller_text_parts", [])
                         caller_text_parts.append(clean_transcript)
                         intake_state = session.setdefault("intake_state", {})
@@ -462,17 +533,27 @@ async def media_stream(ws: WebSocket):
                 if not session.get("greeting_sent"):
                     session["greeting_sent"] = True
                     greeting_text = session.get("greeting") or "Plumbing office, what's going on?"
-                    greeting = json.dumps({
-                        "type": "response.create",
-                        "response": {
-                            "instructions": f'Say only: "{greeting_text}" Then stop.',
-                        },
-                    })
-                    await oai_ws.send(greeting)
+                    await send_response_create("initial_greeting", build_initial_greeting_response(greeting_text))
                     log.info(f"[{call_sid}] Session updated, greeting sent")
 
             elif etype == "input_audio_buffer.speech_started":
                 session = sessions.get(call_sid, {})
+                if call_sid and session.get("greeting_sent") and not session.get("first_caller_speech_started"):
+                    session["first_caller_speech_started"] = True
+                    session["caller_spoke_since_initial_greeting"] = True
+                    elapsed = None
+                    if session.get("initial_greeting_sent_at"):
+                        elapsed = round(asyncio.get_running_loop().time() - session["initial_greeting_sent_at"], 3)
+                    repository.record_call_event(
+                        call_sid,
+                        "first_caller_speech_started_after_initial_greeting",
+                        {
+                            "elapsed_seconds_after_initial_greeting": elapsed,
+                            "response_active": response_active,
+                            "assistant_speaking": assistant_speaking,
+                            "last_response_create_reason": session.get("last_response_create_reason"),
+                        },
+                    )
                 intake_state = session.setdefault("intake_state", {})
                 pending_question = intake_state.get("pending_extra_question") or {}
                 if call_sid and pending_question.get("asked") and not pending_question.get("caller_response_after_pending"):
@@ -529,6 +610,17 @@ async def media_stream(ws: WebSocket):
                     log.info(f"[{call_sid}] submit_service_request: {args}")
                     notification_sms_number = session.get("notification_sms_number") or ""
                     intake_policy = session.get("intake_policy")
+                    repository.record_call_event(
+                        call_sid,
+                        "submit_service_request_attempt",
+                        {
+                            "args": args,
+                            "caller_spoke_since_initial_greeting": bool(
+                                session.get("caller_spoke_since_initial_greeting")
+                            ),
+                            "last_response_create_reason": session.get("last_response_create_reason"),
+                        },
+                    )
 
                     async def send_tenant_sms(send_call_sid: str, send_args: dict, send_from_number: str):
                         return await send_sms(send_call_sid, send_args, send_from_number, notification_sms_number, intake_policy)
@@ -560,7 +652,10 @@ async def media_stream(ws: WebSocket):
                     response_create = {"type": "response.create"}
                     if result.closing_instructions:
                         response_create["response"] = {"instructions": result.closing_instructions}
-                    await oai_ws.send(json.dumps(response_create))
+                    await send_response_create(
+                        response_create_reason_for_service_result(result.output, result.should_hangup),
+                        response_create,
+                    )
                     pending_question = session.setdefault("intake_state", {}).get("pending_extra_question") or {}
                     if result.output.get("reason") in {
                         "intake_policy_missing_extra_fields",

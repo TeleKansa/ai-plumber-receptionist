@@ -83,6 +83,22 @@ class PromptBuilderTests(unittest.TestCase):
         self.assertIn("Never require or ask for a last name", prompt)
         self.assertIn("Never invent a caller name", prompt)
 
+    def test_prompt_includes_initial_pacing_and_info_dump_rules(self):
+        tenant = repository.get_default_tenant()
+        profile = repository.get_active_prompt_profile(tenant["id"])
+
+        prompt = PromptBuilder().build("913-555-0123", tenant=tenant, profile=profile)
+
+        self.assertIn("Ask one decision-point per turn", prompt)
+        self.assertIn("Do not immediately repeat the same question", prompt)
+        self.assertIn("Give the caller time to answer", prompt)
+        self.assertIn('Do not say "I need to know', prompt)
+        self.assertIn("Callers may give information out of order or all at once", prompt)
+        self.assertIn("Do not re-ask fields already clearly provided", prompt)
+        self.assertIn("this number is good", prompt)
+        self.assertIn("extra_fields.property_role", prompt)
+        self.assertIn("extra_fields.additional_notes", prompt)
+
     def test_tenant_a_prompt_does_not_affect_tenant_b(self):
         tenant_a = repository.create_tenant(
             "Tenant A",
