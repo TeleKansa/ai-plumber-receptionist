@@ -4,6 +4,24 @@ from typing import Optional
 
 
 SUPPORTED_CONDITIONS = {"always", "urgency_contains", "issue_contains"}
+COLLECTION_MODES = {"required", "ask_once", "passive"}
+DECLINED_OR_UNKNOWN_VALUES = {
+    "declined",
+    "do not know",
+    "dont know",
+    "don't know",
+    "i do not know",
+    "i dont know",
+    "i don't know",
+    "n a",
+    "na",
+    "no idea",
+    "not provided",
+    "not sure",
+    "refused",
+    "unknown",
+    "unsure",
+}
 
 
 def default_intake_policy() -> dict:
@@ -60,6 +78,23 @@ def _normalize_key(value) -> str:
     return re.sub(r"[^a-z0-9_]+", "_", str(value or "").strip().lower()).strip("_")
 
 
+def _normalize_words(value) -> str:
+    text = str(value or "").strip().lower()
+    text = re.sub(r"[^a-z0-9']+", " ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def answer_is_declined_or_unknown(value) -> bool:
+    return _normalize_words(value) in DECLINED_OR_UNKNOWN_VALUES
+
+
+def _collection_mode(question: dict) -> str:
+    mode = str(question.get("collection_mode") or "").strip().lower()
+    if mode in COLLECTION_MODES:
+        return mode
+    return "required" if _as_bool(question.get("required"), False) else "ask_once"
+
+
 def normalize_extra_question(question: dict) -> Optional[dict]:
     if not isinstance(question, dict):
         return None
@@ -73,6 +108,7 @@ def normalize_extra_question(question: dict) -> Optional[dict]:
         "label": label,
         "question_text": question_text,
         "required": _as_bool(question.get("required"), False),
+        "collection_mode": _collection_mode(question),
         "include_in_sms": _as_bool(question.get("include_in_sms"), False),
         "include_in_admin": _as_bool(question.get("include_in_admin"), True),
         "active": _as_bool(question.get("active"), True),
@@ -160,13 +196,60 @@ def validate_required_extra_fields(args: dict, policy: Optional[dict]) -> dict[s
     errors = {}
     fields = _extra_fields(args)
     for question in applicable_questions(policy, args):
-        if not question.get("required"):
+        if question.get("collection_mode") != "required":
             continue
         value = fields.get(question["key"])
-        if str(value or "").strip():
+        if str(value or "").strip() and not answer_is_declined_or_unknown(value):
             continue
         errors[question["key"]] = f"{question['label']} is required by this tenant's intake policy."
     return errors
+
+
+def missing_policy_extra_fields(args: dict, policy: Optional[dict]) -> list[dict]:
+    missing = []
+    fields = _extra_fields(args)
+    for question in applicable_questions(policy, args):
+        mode = question.get("collection_mode") or "ask_once"
+        if mode == "passive":
+            continue
+        value = fields.get(question["key"])
+        has_value = bool(str(value or "").strip())
+        declined_or_unknown = answer_is_declined_or_unknown(value)
+        if mode == "ask_once" and has_value:
+            continue
+        if mode == "required" and has_value and not declined_or_unknown:
+            continue
+        missing.append(
+            {
+                "key": question["key"],
+                "label": question["label"],
+                "question_text": question.get("question_text") or f"Please ask: {question['label']}",
+                "collection_mode": mode,
+                "error": (
+                    "A useful answer is required."
+                    if mode == "required" and declined_or_unknown
+                    else "This question must be asked before submit."
+                ),
+            }
+        )
+    return missing
+
+
+def missing_extra_guidance(missing_fields: list[dict]) -> str:
+    if not missing_fields:
+        return ""
+    question = missing_fields[0]
+    question_text = question.get("question_text") or question.get("label") or question.get("key")
+    key = question.get("key")
+    if question.get("collection_mode") == "required":
+        return (
+            f"Ask the caller: {question_text} "
+            f"This tenant marked it required, so submit extra_fields.{key} only after the caller gives a useful answer."
+        )
+    return (
+        f"Ask the caller: {question_text} "
+        f"If they decline or do not know, submit extra_fields.{key} as 'declined' or 'unknown'. Then continue."
+    )
 
 
 def _policy_key_list(policy: Optional[dict], field: str) -> set[str]:
@@ -215,4 +298,8 @@ def admin_extra_field_rows(policy: Optional[dict], args: Optional[dict]) -> list
 
 def policy_to_json(policy: Optional[dict], field: str) -> str:
     value = _coerce_json_list((policy or {}).get(field))
+    if field == "extra_questions_json":
+        value = [question for question in (normalize_extra_question(item) for item in value) if question]
+    elif field == "conditional_questions_json":
+        value = [question for question in (normalize_conditional_question(item) for item in value) if question]
     return json.dumps(value, indent=2)

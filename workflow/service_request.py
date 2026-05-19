@@ -2,7 +2,7 @@ from dataclasses import dataclass
 from typing import Optional
 
 from storage import repository
-from workflow.intake_policy import validate_required_extra_fields
+from workflow.intake_policy import applicable_questions, missing_extra_guidance, missing_policy_extra_fields
 from workflow.notifications import SmsSendResult
 from workflow.validation import validate_service_request_args
 
@@ -48,8 +48,6 @@ async def process_service_request(
     intake_policy = repository.get_intake_policy(resolved_tenant_id) if resolved_tenant_id else None
 
     errors = validate_service_request_args(args, caller_text=caller_text)
-    if not errors:
-        errors = validate_required_extra_fields(args, intake_policy)
     if errors:
         guidance = _validation_guidance(errors)
         repository.record_call_event(
@@ -70,6 +68,33 @@ async def process_service_request(
                 "reason": "validation_failed",
                 "missing_fields": list(errors.keys()),
                 "errors": errors,
+                "guidance": guidance,
+            },
+            should_hangup=False,
+            closing_instructions=guidance,
+        )
+
+    active_question_keys = [question["key"] for question in applicable_questions(intake_policy, args)]
+    missing_extra_fields = missing_policy_extra_fields(args, intake_policy)
+    if missing_extra_fields:
+        guidance = missing_extra_guidance(missing_extra_fields)
+        repository.record_call_event(
+            call_sid,
+            "intake_policy_missing_extra_fields",
+            {
+                "missing_extra_fields": missing_extra_fields,
+                "active_intake_policy_question_keys": active_question_keys,
+                "args": args,
+                "caller_text": caller_text,
+                "intake_policy_id": intake_policy.get("id") if intake_policy else None,
+                "guidance": guidance,
+            },
+        )
+        return ServiceRequestResult(
+            output={
+                "success": False,
+                "reason": "intake_policy_missing_extra_fields",
+                "missing_extra_fields": missing_extra_fields,
                 "guidance": guidance,
             },
             should_hangup=False,
@@ -116,7 +141,13 @@ async def process_service_request(
     repository.record_call_event(
         call_sid,
         "lead_created",
-        {"lead_id": lead["id"], "tenant_id": lead.get("tenant_id"), "name_provenance": name_provenance},
+        {
+            "lead_id": lead["id"],
+            "tenant_id": lead.get("tenant_id"),
+            "name_provenance": name_provenance,
+            "active_intake_policy_question_keys": active_question_keys,
+            "extra_fields": args.get("extra_fields") or {},
+        },
     )
 
     if not plumber_phone_number:

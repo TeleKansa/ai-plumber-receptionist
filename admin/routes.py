@@ -96,6 +96,14 @@ def _checkbox(name: str, checked: bool = False) -> str:
     return f'<label><input type="checkbox" name="{escape(name)}" value="1"{checked_attr}> {escape(name)}</label>'
 
 
+def _select(name: str, options: list[tuple[str, str]], selected: str = "") -> str:
+    option_html = []
+    for value, label in options:
+        selected_attr = " selected" if value == selected else ""
+        option_html.append(f'<option value="{escape(value)}"{selected_attr}>{escape(label)}</option>')
+    return f'<label>{escape(name)}<br><select name="{escape(name)}">{"".join(option_html)}</select></label>'
+
+
 def _textarea(name: str, value: str = "", rows: int = 2) -> str:
     return (
         f'<label>{escape(name)}<br>'
@@ -184,9 +192,9 @@ def _prompt_history_table(tenant_id: int, profiles: list[dict]) -> str:
 def _question_table(questions: list[dict], conditional: bool = False) -> str:
     if not questions:
         return "<p>No questions configured.</p>"
-    columns = ["key", "label", "question_text", "required", "include_in_sms", "include_in_admin", "active"]
+    columns = ["key", "label", "question_text", "collection_mode", "include_in_sms", "include_in_admin", "active"]
     if conditional:
-        columns = ["key", "label", "condition_type", "condition_keywords", "question_text", "required", "include_in_sms", "active"]
+        columns = ["key", "label", "condition_type", "condition_keywords", "question_text", "collection_mode", "include_in_sms", "active"]
     rows = []
     for question in questions:
         cells = []
@@ -454,6 +462,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 f'<p><a href="/admin/tenants/{tenant_id}">Back to tenant detail</a> | <a href="/admin/tenants/{tenant_id}/prompt">Prompt/persona settings</a> | <a href="/admin/tenants">Back to tenants</a></p>',
                 "<h3>Core workflow is locked</h3>",
                 "<p>Required core fields stay: issue, urgency, address, callback, name. First name is enough; last name is not required. Intake policy can only add tenant-specific questions.</p>",
+                "<p><strong>Collection modes:</strong> Required blocks submit until a useful answer is collected. Ask once means the AI will ask this question before submitting, but the caller can decline or say unknown. Passive means the AI may collect it only if it comes up naturally.</p>",
                 "<h3>Current Extra Questions</h3>",
                 _question_table(extra_questions(policy, include_inactive=True)),
                 "<h3>Current Conditional Questions</h3>",
@@ -466,7 +475,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<br><br>",
                 _textarea("question_text", "Are you the homeowner or are you renting?", rows=2),
                 "<br><br>",
-                _checkbox("required", False),
+                _select("collection_mode", [("ask_once", "Ask once"), ("required", "Required"), ("passive", "Passive")], "ask_once"),
                 "<br><br>",
                 _checkbox("include_in_sms", True),
                 "<br><br>",
@@ -488,7 +497,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<br><br>",
                 _textarea("question_text", "Can you shut the water off there?", rows=2),
                 "<br><br>",
-                _checkbox("required", False),
+                _select("collection_mode", [("ask_once", "Ask once"), ("required", "Required"), ("passive", "Passive")], "ask_once"),
                 "<br><br>",
                 _checkbox("include_in_sms", True),
                 "<br><br>",
@@ -557,7 +566,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "key": str(form.get("key", "")).strip(),
                 "label": str(form.get("label", "")).strip(),
                 "question_text": str(form.get("question_text", "")).strip(),
-                "required": _parse_form_bool(form.get("required")),
+                "collection_mode": str(form.get("collection_mode", "ask_once")).strip() or "ask_once",
                 "include_in_sms": _parse_form_bool(form.get("include_in_sms")),
                 "include_in_admin": _parse_form_bool(form.get("include_in_admin")),
                 "active": _parse_form_bool(form.get("active")),
@@ -589,7 +598,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "condition_type": str(form.get("condition_type", "")).strip(),
                 "condition_keywords": _lines_to_list(str(form.get("condition_keywords", ""))),
                 "question_text": str(form.get("question_text", "")).strip(),
-                "required": _parse_form_bool(form.get("required")),
+                "collection_mode": str(form.get("collection_mode", "ask_once")).strip() or "ask_once",
                 "include_in_sms": _parse_form_bool(form.get("include_in_sms")),
                 "include_in_admin": True,
                 "active": _parse_form_bool(form.get("active")),

@@ -65,19 +65,19 @@ def _intake_policy_text(policy: Optional[dict]) -> str:
 
     extra_lines = []
     for question in extra_questions(policy):
-        required = "required" if question.get("required") else "optional"
+        mode = question.get("collection_mode") or "ask_once"
         extra_lines.append(
-            f"- {question['label']} ({question['key']}, {required}): {question.get('question_text') or 'No wording configured.'}"
+            f"- {question['label']} ({question['key']}, {mode}): {question.get('question_text') or 'No wording configured.'}"
         )
 
     conditional_lines = []
     for question in conditional_questions(policy):
-        required = "required" if question.get("required") else "optional"
+        mode = question.get("collection_mode") or "ask_once"
         condition_type = question.get("condition_type") or "always"
         keywords = ", ".join(question.get("condition_keywords") or [])
         condition_text = "always" if condition_type == "always" else f"{condition_type}: {keywords}"
         conditional_lines.append(
-            f"- {question['label']} ({question['key']}, {required}, if {condition_text}): "
+            f"- {question['label']} ({question['key']}, {mode}, if {condition_text}): "
             f"{question.get('question_text') or 'No wording configured.'}"
         )
 
@@ -93,8 +93,13 @@ def _intake_policy_text(policy: Optional[dict]) -> str:
             *(conditional_lines or ["- None."]),
             "",
             "Submit answers for tenant-specific questions in submit_service_request.extra_fields as an object keyed by the field key.",
-            "Required tenant-specific questions must be collected when applicable. Optional questions can be skipped if the caller is rushed or already gave enough information.",
-            "Do not let optional extra questions delay emergency lead capture. Core required fields still matter more than style or extra questions.",
+            "Before calling submit_service_request, ask every active required and ask_once tenant-specific question that applies.",
+            "Do not silently skip ask_once questions. Ask once before submit.",
+            "If the caller answers an ask_once question, put the answer in extra_fields.",
+            "If the caller declines, does not know, or is rushed on an ask_once question, put \"declined\" or \"unknown\" in extra_fields and continue.",
+            "Required tenant-specific questions must have a useful answer; declined, unknown, or not provided does not satisfy required questions.",
+            "Passive questions can be captured if naturally provided, but they do not have to be asked before submit.",
+            "Do not let passive questions delay emergency lead capture. Core required fields still matter more than style or extra questions.",
         ]
     )
 

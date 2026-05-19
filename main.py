@@ -93,7 +93,7 @@ TOOLS = [
                 "name":     {"type": "string", "description": "Customer name"},
                 "extra_fields": {
                     "type": "object",
-                    "description": "Optional tenant-specific extra answers, keyed by intake policy field key.",
+                    "description": "Tenant-specific intake policy answers, keyed by field key. Include required and ask_once question answers here; use 'declined' or 'unknown' for ask_once questions the caller cannot answer.",
                 },
             },
             "required": ["issue", "urgency", "address", "callback", "name"],

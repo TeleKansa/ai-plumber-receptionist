@@ -246,6 +246,8 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(response.status_code, 200)
         self.assertIn("TENANT INTAKE POLICY", response.text)
         self.assertIn("Add Extra Question", response.text)
+        self.assertIn("Ask once means the AI will ask this question before submitting", response.text)
+        self.assertIn("collection_mode", response.text)
         self.assertIn("Prompt/persona settings", response.text)
 
         add_response = self.client.post(
@@ -254,6 +256,7 @@ class AdminRoutesTests(unittest.TestCase):
                 "key": "property_role",
                 "label": "Homeowner or renter",
                 "question_text": "Are you the homeowner or are you renting?",
+                "collection_mode": "ask_once",
                 "include_in_sms": "1",
                 "include_in_admin": "1",
                 "active": "1",
@@ -265,6 +268,7 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertEqual(add_response.status_code, 303)
         policy = repository.get_intake_policy(tenant["id"])
         self.assertIn("property_role", policy["extra_questions_json"])
+        self.assertIn("ask_once", policy["extra_questions_json"])
         updated_response = self.client.get(f"/admin/tenants/{tenant['id']}/intake-policy", auth=("admin", "secret"))
         self.assertIn("Homeowner or renter", updated_response.text)
 

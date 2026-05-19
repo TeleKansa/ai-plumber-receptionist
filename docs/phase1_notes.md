@@ -50,3 +50,7 @@ Name validation now uses caller transcript text when OpenAI provides it. If tran
 ## Milestone 2 Note
 
 Multi-tenant lite adds tenants, tenant phone numbers, tenant settings, tenant-scoped calls/leads/notifications/events, tenant-specific SMS recipients, and simple `/admin/tenants` management. Startup migration is additive: it creates new tenant tables, adds nullable `tenant_id` columns to existing Milestone 1 tables if needed, and backfills existing data to the default tenant.
+
+## Milestone 4B Intake Policy Hotfix Note
+
+Tenant intake policy now uses explicit `collection_mode` values: `required`, `ask_once`, and `passive`. Existing JSON questions without `collection_mode` are interpreted safely: `required=true` maps to `required`, and `required=false` maps to `ask_once`. New admin-created questions default to `ask_once`, so the AI must ask them before submit; callers can still answer `declined` or `unknown` and continue.
