@@ -50,10 +50,29 @@ class AdminRoutesTests(unittest.TestCase):
                 "args": {"address": "my house"},
             },
         )
+        repository.record_call_event(
+            "CALL_ADMIN_FAIL",
+            "twilio_websocket_disconnected",
+            {
+                "disconnect_code": 1006,
+                "snapshot": {"media_stream_exit_reason": "websocket_disconnect"},
+            },
+        )
+        repository.record_call_event(
+            "CALL_ADMIN_FAIL",
+            "media_stream_done",
+            {
+                "media_stream_exit_reason": "websocket_disconnect",
+                "last_ai_transcript": "Okay, what's the service address?",
+            },
+        )
 
         response = self.client.get("/admin/calls/CALL_ADMIN_FAIL", auth=("admin", "secret"))
 
         self.assertEqual(response.status_code, 200)
+        self.assertIn("Lifecycle Debug", response.text)
+        self.assertIn("twilio_websocket_disconnected", response.text)
+        self.assertIn("media_stream_exit_reason", response.text)
         self.assertIn("validation_failed", response.text)
         self.assertIn("missing_fields", response.text)
         self.assertIn("my house", response.text)

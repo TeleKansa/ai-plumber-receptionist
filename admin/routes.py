@@ -880,7 +880,42 @@ def create_admin_router(settings: Settings) -> APIRouter:
     @router.get("/admin/calls/{call_sid}", response_class=HTMLResponse)
     async def admin_call_detail(call_sid: str):
         detail = repository.get_call_detail(call_sid)
-        body = f"<pre>{escape(json.dumps(detail, default=str, indent=2))}</pre>"
+        lifecycle_event_names = {
+            "media_stream_started",
+            "response_create_sent",
+            "twilio_stream_stopped",
+            "media_stream_stopped",
+            "twilio_websocket_disconnected",
+            "openai_reader_error",
+            "openai_websocket_closed",
+            "openai_realtime_error",
+            "openai_reader_cancelled",
+            "media_stream_exception",
+            "media_stream_done",
+            "hangup_scheduled",
+            "hangup_schedule_blocked",
+            "call_ended",
+        }
+        events = detail.get("events") or []
+        lifecycle_events = [
+            event for event in events if event.get("event_type") in lifecycle_event_names
+        ]
+        latest_done = next(
+            (event for event in lifecycle_events if event.get("event_type") == "media_stream_done"),
+            None,
+        )
+        body = "\n".join(
+            [
+                "<h2>Lifecycle Debug</h2>",
+                "<p>These events distinguish app hangup, Twilio stop, websocket disconnect, OpenAI reader failure, and unknown exits.</p>",
+                "<h3>Latest Exit Snapshot</h3>",
+                f"<pre>{escape(latest_done.get('payload_json') if latest_done else 'No media_stream_done event recorded yet.')}</pre>",
+                "<h3>Lifecycle Events</h3>",
+                _render_table(lifecycle_events, ["created_at", "event_type", "payload_json"]),
+                "<h3>Full Call Detail</h3>",
+                f"<pre>{escape(json.dumps(detail, default=str, indent=2))}</pre>",
+            ]
+        )
         return _page(f"Call {call_sid}", body)
 
     return router

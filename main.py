@@ -150,6 +150,9 @@ def response_create_event_payload(reason: str, response_create: dict, session: d
         "first_caller_speech_started": bool(session.get("first_caller_speech_started")),
         "previous_response_create_reason": session.get("last_response_create_reason"),
         "complete": bool(session.get("complete")),
+        "pending_hangup": bool(session.get("pending_hangup")),
+        "submit_service_request_seen": bool(session.get("submit_service_request_seen")),
+        "lead_id": session.get("lead_id"),
     }
 
 
@@ -162,6 +165,207 @@ def response_create_reason_for_service_result(output: dict, should_hangup: bool)
     if reason in {"intake_policy_missing_extra_fields", "intake_policy_unanswered_extra_field"}:
         return "intake_missing_extra"
     return "other"
+
+
+def set_media_stream_exit_reason(
+    lifecycle: dict,
+    reason: str,
+    detail: Optional[dict] = None,
+    overwrite: bool = False,
+) -> str:
+    current = lifecycle.get("exit_reason") or "unknown"
+    if overwrite or current == "unknown":
+        lifecycle["exit_reason"] = reason
+        lifecycle["exit_detail"] = detail or {}
+    return lifecycle.get("exit_reason") or "unknown"
+
+
+def safe_record_call_event(call_sid: Optional[str], event_type: str, payload: dict, tenant_id: Optional[int] = None) -> None:
+    if not call_sid:
+        return
+    try:
+        repository.record_call_event(call_sid, event_type, payload, tenant_id=tenant_id)
+    except Exception as exc:
+        log.exception(f"[{call_sid}] Failed to record call_event {event_type}: {exc}")
+
+
+def safe_mark_call_ended(call_sid: Optional[str], status: str) -> None:
+    if not call_sid:
+        return
+    try:
+        repository.mark_call_ended(call_sid, status)
+    except Exception as exc:
+        log.exception(f"[{call_sid}] Failed to mark call ended status={status}: {exc}")
+
+
+def media_stream_session_snapshot(
+    call_sid: Optional[str],
+    stream_sid: Optional[str],
+    session: Optional[dict],
+    lifecycle: Optional[dict],
+    response_active: bool = False,
+    assistant_speaking: bool = False,
+) -> dict:
+    session = session or {}
+    lifecycle = lifecycle or {}
+    return {
+        "call_sid": call_sid,
+        "stream_sid": stream_sid,
+        "tenant_id": session.get("tenant_id"),
+        "media_stream_exit_reason": lifecycle.get("exit_reason") or "unknown",
+        "media_stream_exit_detail": lifecycle.get("exit_detail") or {},
+        "openai_reader_exit_reason": lifecycle.get("openai_reader_exit_reason"),
+        "openai_close_code": lifecycle.get("openai_close_code"),
+        "openai_close_reason": lifecycle.get("openai_close_reason"),
+        "complete": bool(session.get("complete")),
+        "pending_hangup": bool(session.get("pending_hangup")),
+        "closing_response_started": bool(session.get("closing_response_started")),
+        "hangup_scheduled": bool(session.get("hangup_scheduled")),
+        "response_active": bool(response_active),
+        "assistant_speaking": bool(assistant_speaking),
+        "last_ai_transcript": _event_text(session.get("last_ai_transcript"), limit=500),
+        "last_response_create_reason": session.get("last_response_create_reason"),
+        "submit_service_request_seen": bool(session.get("submit_service_request_seen")),
+        "lead_id": session.get("lead_id"),
+        "hangup_reason": session.get("hangup_reason"),
+    }
+
+
+def disconnect_payload(exc: BaseException) -> dict:
+    return {
+        "disconnect_code": getattr(exc, "code", None),
+        "disconnect_reason": getattr(exc, "reason", None),
+        "exception_type": type(exc).__name__,
+        "exception": str(exc) or None,
+    }
+
+
+def record_twilio_websocket_disconnect(
+    call_sid: Optional[str],
+    stream_sid: Optional[str],
+    exc: BaseException,
+    lifecycle: dict,
+    session: Optional[dict],
+    response_active: bool,
+    assistant_speaking: bool,
+) -> dict:
+    payload = disconnect_payload(exc)
+    set_media_stream_exit_reason(lifecycle, "websocket_disconnect", payload)
+    snapshot = media_stream_session_snapshot(call_sid, stream_sid, session, lifecycle, response_active, assistant_speaking)
+    event_payload = {**payload, "snapshot": snapshot}
+    log.warning(f"[{call_sid}] Twilio websocket disconnected: {payload}")
+    safe_record_call_event(call_sid, "twilio_websocket_disconnected", event_payload)
+    safe_mark_call_ended(call_sid, "websocket_disconnected")
+    return event_payload
+
+
+def record_twilio_stream_stopped(
+    call_sid: Optional[str],
+    stream_sid: Optional[str],
+    stop_payload: dict,
+    lifecycle: dict,
+    session: Optional[dict],
+    response_active: bool,
+    assistant_speaking: bool,
+) -> dict:
+    payload = stop_payload or {}
+    set_media_stream_exit_reason(lifecycle, "twilio_stop", payload)
+    snapshot = media_stream_session_snapshot(call_sid, stream_sid, session, lifecycle, response_active, assistant_speaking)
+    event_payload = {"stop": payload, "snapshot": snapshot}
+    log.info(f"[{call_sid}] Twilio stream stopped payload={payload}")
+    safe_record_call_event(call_sid, "twilio_stream_stopped", event_payload)
+    safe_record_call_event(call_sid, "media_stream_stopped", payload)
+    safe_mark_call_ended(call_sid, "stream_stopped")
+    return event_payload
+
+
+def record_openai_websocket_closed(
+    call_sid: Optional[str],
+    stream_sid: Optional[str],
+    exc: BaseException,
+    lifecycle: dict,
+    session: Optional[dict],
+    response_active: bool,
+    assistant_speaking: bool,
+) -> dict:
+    payload = {
+        "close_code": getattr(exc, "code", None),
+        "close_reason": getattr(exc, "reason", None),
+        "exception_type": type(exc).__name__,
+        "exception": str(exc) or None,
+    }
+    lifecycle["openai_reader_exit_reason"] = "openai_closed"
+    lifecycle["openai_close_code"] = payload["close_code"]
+    lifecycle["openai_close_reason"] = payload["close_reason"]
+    snapshot = media_stream_session_snapshot(call_sid, stream_sid, session, lifecycle, response_active, assistant_speaking)
+    event_payload = {**payload, "snapshot": snapshot}
+    log.warning(f"[{call_sid}] OpenAI websocket closed: {payload}")
+    safe_record_call_event(call_sid, "openai_websocket_closed", event_payload)
+    return event_payload
+
+
+def record_openai_reader_error(
+    call_sid: Optional[str],
+    stream_sid: Optional[str],
+    exc: BaseException,
+    lifecycle: dict,
+    session: Optional[dict],
+    response_active: bool,
+    assistant_speaking: bool,
+) -> dict:
+    payload = {
+        "exception_type": type(exc).__name__,
+        "exception": str(exc),
+    }
+    lifecycle["openai_reader_exit_reason"] = "openai_reader_error"
+    snapshot = media_stream_session_snapshot(call_sid, stream_sid, session, lifecycle, response_active, assistant_speaking)
+    event_payload = {**payload, "snapshot": snapshot}
+    log.error(f"[{call_sid}] OpenAI reader error: {exc}", exc_info=(type(exc), exc, exc.__traceback__))
+    safe_record_call_event(call_sid, "openai_reader_error", event_payload)
+    return event_payload
+
+
+def can_schedule_hangup(session: dict) -> bool:
+    return bool(
+        session.get("pending_hangup")
+        and session.get("closing_response_started")
+        and not session.get("hangup_scheduled")
+        and session.get("submit_service_request_seen")
+        and session.get("lead_id")
+    )
+
+
+def hangup_scheduled_payload(session: dict) -> dict:
+    return {
+        "reason": session.get("hangup_reason") or "service_request_complete",
+        "lead_id": session.get("lead_id"),
+        "closing_response_started": bool(session.get("closing_response_started")),
+        "should_hangup": bool(session.get("complete")),
+        "submit_service_request_seen": bool(session.get("submit_service_request_seen")),
+    }
+
+
+def record_media_stream_done(
+    call_sid: Optional[str],
+    stream_sid: Optional[str],
+    session: Optional[dict],
+    lifecycle: dict,
+    response_active: bool,
+    assistant_speaking: bool,
+) -> dict:
+    if (lifecycle.get("exit_reason") or "unknown") == "unknown":
+        if (session or {}).get("complete"):
+            set_media_stream_exit_reason(lifecycle, "normal_complete")
+        elif lifecycle.get("openai_reader_exit_reason") == "openai_closed":
+            set_media_stream_exit_reason(lifecycle, "openai_closed")
+        elif lifecycle.get("openai_reader_exit_reason") == "openai_reader_error":
+            set_media_stream_exit_reason(lifecycle, "exception")
+        else:
+            set_media_stream_exit_reason(lifecycle, "unknown")
+    snapshot = media_stream_session_snapshot(call_sid, stream_sid, session, lifecycle, response_active, assistant_speaking)
+    safe_record_call_event(call_sid, "media_stream_done", snapshot)
+    log.info(f"[{call_sid}] media_stream done exit_reason={snapshot['media_stream_exit_reason']} snapshot={snapshot}")
+    return snapshot
 
 # ---------------------------------------------------------------------------
 # Startup / health
@@ -383,10 +587,25 @@ async def send_sms(
         return SmsSendResult(success=False, error=str(exc))
 
 
-async def hangup_call(call_sid: str, delay_seconds: float = 5.0):
+async def hangup_call(
+    call_sid: str,
+    delay_seconds: float = 5.0,
+    reason: str = "service_request_complete",
+    lead_id: Optional[int] = None,
+):
     await asyncio.sleep(delay_seconds)
     try:
         await asyncio.to_thread(lambda: twilio.calls(call_sid).update(status="completed"))
+        safe_record_call_event(
+            call_sid,
+            "call_ended",
+            {
+                "ended_by": "app_rest_api",
+                "reason": reason,
+                "lead_id": lead_id,
+            },
+        )
+        safe_mark_call_ended(call_sid, "app_hangup_completed")
         log.info(f"[{call_sid}] Call ended")
     except Exception as exc:
         log.exception(f"[{call_sid}] Failed to end call: {exc}")
@@ -404,11 +623,20 @@ async def media_stream(ws: WebSocket):
     stream_sid: Optional[str] = None
     from_number: str          = "unknown"
     oai_ws    : Optional[websockets.WebSocketClientProtocol] = None
+    oai_reader_task: Optional[asyncio.Task] = None
     twilio_to_oai_state = None
     oai_to_twilio_state = None
     assistant_speaking = False
     response_active = False
     suppress_input_until = 0.0
+    lifecycle = {
+        "exit_reason": "unknown",
+        "exit_detail": {},
+        "openai_reader_exit_reason": None,
+        "openai_close_code": None,
+        "openai_close_reason": None,
+        "closing_oai_from_media_finally": False,
+    }
 
     # -- OpenAI reader (background task) -------------------------------------
 
@@ -430,258 +658,317 @@ async def media_stream(ws: WebSocket):
             if reason == "initial_greeting":
                 session["initial_greeting_sent_at"] = asyncio.get_running_loop().time()
                 session["caller_spoke_since_initial_greeting"] = False
-            repository.record_call_event(call_sid, "response_create_sent", payload)
+            safe_record_call_event(call_sid, "response_create_sent", payload)
             session["last_response_create_reason"] = reason
             await oai_ws.send(json.dumps(response_create))
 
-        async for raw in oai_ws:
-            evt   = json.loads(raw)
-            etype = evt.get("type", "")
+        try:
+            async for raw in oai_ws:
+                evt   = json.loads(raw)
+                etype = evt.get("type", "")
 
-            if etype != "response.output_audio.delta":
-                log.info(f"[{call_sid}] [OAI_IN] {etype}")
+                if etype != "response.output_audio.delta":
+                    log.info(f"[{call_sid}] [OAI_IN] {etype}")
 
-            # Forward AI audio to Twilio (pcm16 24kHz → mulaw 8kHz)
-            if etype == "response.output_audio.delta":
-                delta = evt.get("delta", "")
-                if delta and stream_sid:
-                    assistant_speaking = True
-                    pcm24k = base64.b64decode(delta)
-                    pcm8k, oai_to_twilio_state = audioop.ratecv(
-                        pcm24k, 2, 1, 24000, 8000, oai_to_twilio_state
-                    )
-                    mulaw = audioop.lin2ulaw(pcm8k, 2)
-                    await ws.send_text(json.dumps({
-                        "event":     "media",
-                        "streamSid": stream_sid,
-                        "media":     {"payload": base64.b64encode(mulaw).decode()},
-                    }))
-
-            elif etype == "response.output_audio_transcript.delta":
-                assistant_transcript += evt.get("delta", "")
-
-            elif etype == "response.output_audio_transcript.done":
-                transcript = evt.get("transcript") or assistant_transcript
-                if transcript.strip():
-                    clean_transcript = transcript.strip()
-                    log.info(f"[{call_sid}] AI said: {clean_transcript}")
-                    session = sessions.get(call_sid, {})
-                    repository.record_call_event(
-                        call_sid,
-                        "assistant_transcript",
-                        {
-                            "transcript": clean_transcript,
-                            "response_create_reason": session.get("last_response_create_reason"),
-                            "caller_spoke_since_initial_greeting": bool(
-                                session.get("caller_spoke_since_initial_greeting")
-                            ),
-                            "first_caller_speech_started": bool(session.get("first_caller_speech_started")),
-                        },
-                    )
-                assistant_transcript = ""
-
-            elif etype == "response.output_audio.done":
-                assistant_speaking = False
-                suppress_input_until = asyncio.get_running_loop().time() + 0.25
-
-            elif etype in (
-                "conversation.item.input_audio_transcription.delta",
-                "input_audio_transcription.delta",
-            ):
-                caller_transcript += evt.get("delta", "")
-
-            elif etype in (
-                "conversation.item.input_audio_transcription.completed",
-                "conversation.item.input_audio_transcription.done",
-                "input_audio_transcription.completed",
-                "input_audio_transcription.done",
-            ):
-                transcript = evt.get("transcript") or caller_transcript
-                if transcript.strip():
-                    clean_transcript = transcript.strip()
-                    log.info(f"[{call_sid}] Caller said: {clean_transcript}")
-                    if call_sid:
-                        session = sessions.setdefault(call_sid, {})
-                        if session.get("greeting_sent"):
-                            session["caller_spoke_since_initial_greeting"] = True
-                        caller_text_parts = session.setdefault("caller_text_parts", [])
-                        caller_text_parts.append(clean_transcript)
-                        intake_state = session.setdefault("intake_state", {})
-                        pending_question = intake_state.get("pending_extra_question") or {}
-                        if pending_question.get("asked"):
-                            pending_question["caller_response_after_pending"] = True
-                            pending_question["caller_response_text"] = clean_transcript
-                            repository.record_call_event(
-                                call_sid,
-                                "intake_question_caller_response",
-                                {
-                                    "pending_extra_question": pending_question,
-                                    "transcript": clean_transcript,
-                                },
-                            )
-                        repository.record_call_event(
-                            call_sid,
-                            "caller_transcript",
-                            {"transcript": clean_transcript},
+                # Forward AI audio to Twilio (pcm16 24kHz → mulaw 8kHz)
+                if etype == "response.output_audio.delta":
+                    delta = evt.get("delta", "")
+                    if delta and stream_sid:
+                        assistant_speaking = True
+                        pcm24k = base64.b64decode(delta)
+                        pcm8k, oai_to_twilio_state = audioop.ratecv(
+                            pcm24k, 2, 1, 24000, 8000, oai_to_twilio_state
                         )
-                caller_transcript = ""
+                        mulaw = audioop.lin2ulaw(pcm8k, 2)
+                        await ws.send_text(json.dumps({
+                            "event":     "media",
+                            "streamSid": stream_sid,
+                            "media":     {"payload": base64.b64encode(mulaw).decode()},
+                        }))
 
-            # Function call — GA API delivers complete call in response.output_item.done
-            elif etype == "session.updated":
-                session = sessions.get(call_sid, {})
-                if not session.get("greeting_sent"):
-                    session["greeting_sent"] = True
-                    greeting_text = session.get("greeting") or "Plumbing office, what's going on?"
-                    await send_response_create("initial_greeting", build_initial_greeting_response(greeting_text))
-                    log.info(f"[{call_sid}] Session updated, greeting sent")
+                elif etype == "response.output_audio_transcript.delta":
+                    assistant_transcript += evt.get("delta", "")
 
-            elif etype == "input_audio_buffer.speech_started":
-                session = sessions.get(call_sid, {})
-                if call_sid and session.get("greeting_sent") and not session.get("first_caller_speech_started"):
-                    session["first_caller_speech_started"] = True
-                    session["caller_spoke_since_initial_greeting"] = True
-                    elapsed = None
-                    if session.get("initial_greeting_sent_at"):
-                        elapsed = round(asyncio.get_running_loop().time() - session["initial_greeting_sent_at"], 3)
-                    repository.record_call_event(
-                        call_sid,
-                        "first_caller_speech_started_after_initial_greeting",
-                        {
-                            "elapsed_seconds_after_initial_greeting": elapsed,
-                            "response_active": response_active,
-                            "assistant_speaking": assistant_speaking,
-                            "last_response_create_reason": session.get("last_response_create_reason"),
-                        },
-                    )
-                intake_state = session.setdefault("intake_state", {})
-                pending_question = intake_state.get("pending_extra_question") or {}
-                if call_sid and pending_question.get("asked") and not pending_question.get("caller_response_after_pending"):
-                    pending_question["caller_response_after_pending"] = True
-                    repository.record_call_event(
-                        call_sid,
-                        "intake_question_caller_response_started",
-                        {"pending_extra_question": pending_question},
-                    )
-                if assistant_speaking or asyncio.get_running_loop().time() < suppress_input_until:
-                    log.info(f"[{call_sid}] Ignoring speech_started during AI audio/suppress window")
-                elif not session.get("complete") and response_active:
-                    log.info(f"[{call_sid}] Caller speech started; canceling current AI audio")
-                    try:
-                        await oai_ws.send(json.dumps({"type": "response.cancel"}))
-                    except Exception as exc:
-                        log.info(f"[{call_sid}] response.cancel ignored: {exc}")
-                    await clear_twilio_audio()
-                else:
-                    log.info(f"[{call_sid}] Caller speech started")
+                elif etype == "response.output_audio_transcript.done":
+                    transcript = evt.get("transcript") or assistant_transcript
+                    if transcript.strip():
+                        clean_transcript = transcript.strip()
+                        log.info(f"[{call_sid}] AI said: {clean_transcript}")
+                        session = sessions.get(call_sid, {})
+                        session["last_ai_transcript"] = clean_transcript
+                        safe_record_call_event(
+                            call_sid,
+                            "assistant_transcript",
+                            {
+                                "transcript": clean_transcript,
+                                "response_create_reason": session.get("last_response_create_reason"),
+                                "caller_spoke_since_initial_greeting": bool(
+                                    session.get("caller_spoke_since_initial_greeting")
+                                ),
+                                "first_caller_speech_started": bool(session.get("first_caller_speech_started")),
+                            },
+                        )
+                    assistant_transcript = ""
 
-            elif etype == "response.created":
-                response_active = True
-                session = sessions.get(call_sid, {})
-                if session.get("pending_hangup") and not session.get("closing_response_started"):
-                    session["closing_response_started"] = True
-                    log.info(f"[{call_sid}] Closing response started")
+                elif etype == "response.output_audio.done":
+                    assistant_speaking = False
+                    suppress_input_until = asyncio.get_running_loop().time() + 0.25
 
-            elif etype == "response.done":
-                response_active = False
-                assistant_speaking = False
-                suppress_input_until = max(suppress_input_until, asyncio.get_running_loop().time() + 0.25)
-                session = sessions.get(call_sid, {})
-                if (
-                    session.get("pending_hangup")
-                    and session.get("closing_response_started")
-                    and not session.get("hangup_scheduled")
+                elif etype in (
+                    "conversation.item.input_audio_transcription.delta",
+                    "input_audio_transcription.delta",
                 ):
-                    session["hangup_scheduled"] = True
-                    log.info(f"[{call_sid}] Closing response done; scheduling hangup")
-                    asyncio.create_task(hangup_call(call_sid))
+                    caller_transcript += evt.get("delta", "")
 
-            elif etype == "response.output_item.done":
-                item = evt.get("item", {})
-                if item.get("type") == "function_call" and item.get("name") == "submit_service_request":
-                    call_id = item.get("call_id", "")
-                    try:
-                        args = json.loads(item.get("arguments", "{}"))
-                    except json.JSONDecodeError:
-                        log.error(f"[{call_sid}] Bad function args: {item.get('arguments')!r}")
-                        args = {}
+                elif etype in (
+                    "conversation.item.input_audio_transcription.completed",
+                    "conversation.item.input_audio_transcription.done",
+                    "input_audio_transcription.completed",
+                    "input_audio_transcription.done",
+                ):
+                    transcript = evt.get("transcript") or caller_transcript
+                    if transcript.strip():
+                        clean_transcript = transcript.strip()
+                        log.info(f"[{call_sid}] Caller said: {clean_transcript}")
+                        if call_sid:
+                            session = sessions.setdefault(call_sid, {})
+                            if session.get("greeting_sent"):
+                                session["caller_spoke_since_initial_greeting"] = True
+                            caller_text_parts = session.setdefault("caller_text_parts", [])
+                            caller_text_parts.append(clean_transcript)
+                            intake_state = session.setdefault("intake_state", {})
+                            pending_question = intake_state.get("pending_extra_question") or {}
+                            if pending_question.get("asked"):
+                                pending_question["caller_response_after_pending"] = True
+                                pending_question["caller_response_text"] = clean_transcript
+                                safe_record_call_event(
+                                    call_sid,
+                                    "intake_question_caller_response",
+                                    {
+                                        "pending_extra_question": pending_question,
+                                        "transcript": clean_transcript,
+                                    },
+                                )
+                            safe_record_call_event(
+                                call_sid,
+                                "caller_transcript",
+                                {"transcript": clean_transcript},
+                            )
+                    caller_transcript = ""
 
+                # Function call — GA API delivers complete call in response.output_item.done
+                elif etype == "session.updated":
                     session = sessions.get(call_sid, {})
-                    log.info(f"[{call_sid}] submit_service_request: {args}")
-                    intake_policy = session.get("intake_policy")
-                    notification_policy = repository.get_notification_policy(session.get("tenant_id")) if session.get("tenant_id") else None
-                    repository.record_call_event(
-                        call_sid,
-                        "submit_service_request_attempt",
-                        {
-                            "args": args,
-                            "caller_spoke_since_initial_greeting": bool(
-                                session.get("caller_spoke_since_initial_greeting")
-                            ),
-                            "last_response_create_reason": session.get("last_response_create_reason"),
-                        },
-                    )
+                    if not session.get("greeting_sent"):
+                        session["greeting_sent"] = True
+                        greeting_text = session.get("greeting") or "Plumbing office, what's going on?"
+                        await send_response_create("initial_greeting", build_initial_greeting_response(greeting_text))
+                        log.info(f"[{call_sid}] Session updated, greeting sent")
 
-                    async def send_tenant_sms(send_call_sid: str, send_args: dict, send_from_number: str, send_to_number: str):
-                        return await send_sms(
-                            send_call_sid,
-                            send_args,
-                            send_from_number,
-                            send_to_number,
-                            intake_policy,
-                            notification_policy,
-                        )
-
-                    result = await process_service_request(
-                        call_sid,
-                        args,
-                        session.get("from_number", "unknown"),
-                        session.get("notification_sms_number", ""),
-                        send_tenant_sms,
-                        caller_text=" ".join(session.get("caller_text_parts", [])),
-                        tenant_id=session.get("tenant_id"),
-                        intake_state=session.setdefault("intake_state", {}),
-                    )
-                    session["complete"] = result.should_hangup
-
-                    # Return result so AI delivers the closing line
-                    await oai_ws.send(json.dumps({
-                        "type": "conversation.item.create",
-                        "item": {
-                            "type":    "function_call_output",
-                            "call_id": call_id,
-                            "output":  build_service_request_output(result.output),
-                        },
-                    }))
-                    if result.should_hangup:
-                        session["pending_hangup"] = True
-                        session["closing_response_started"] = False
-                    response_create = {"type": "response.create"}
-                    if result.closing_instructions:
-                        response_create["response"] = {"instructions": result.closing_instructions}
-                    await send_response_create(
-                        response_create_reason_for_service_result(result.output, result.should_hangup),
-                        response_create,
-                    )
-                    pending_question = session.setdefault("intake_state", {}).get("pending_extra_question") or {}
-                    if result.output.get("reason") in {
-                        "intake_policy_missing_extra_fields",
-                        "intake_policy_unanswered_extra_field",
-                    } and pending_question:
-                        pending_question["asked"] = True
-                        repository.record_call_event(
+                elif etype == "input_audio_buffer.speech_started":
+                    session = sessions.get(call_sid, {})
+                    if call_sid and session.get("greeting_sent") and not session.get("first_caller_speech_started"):
+                        session["first_caller_speech_started"] = True
+                        session["caller_spoke_since_initial_greeting"] = True
+                        elapsed = None
+                        if session.get("initial_greeting_sent_at"):
+                            elapsed = round(asyncio.get_running_loop().time() - session["initial_greeting_sent_at"], 3)
+                        safe_record_call_event(
                             call_sid,
-                            "intake_question_prompted",
+                            "first_caller_speech_started_after_initial_greeting",
+                            {
+                                "elapsed_seconds_after_initial_greeting": elapsed,
+                                "response_active": response_active,
+                                "assistant_speaking": assistant_speaking,
+                                "last_response_create_reason": session.get("last_response_create_reason"),
+                            },
+                        )
+                    intake_state = session.setdefault("intake_state", {})
+                    pending_question = intake_state.get("pending_extra_question") or {}
+                    if call_sid and pending_question.get("asked") and not pending_question.get("caller_response_after_pending"):
+                        pending_question["caller_response_after_pending"] = True
+                        safe_record_call_event(
+                            call_sid,
+                            "intake_question_caller_response_started",
                             {"pending_extra_question": pending_question},
                         )
+                    if assistant_speaking or asyncio.get_running_loop().time() < suppress_input_until:
+                        log.info(f"[{call_sid}] Ignoring speech_started during AI audio/suppress window")
+                    elif not session.get("complete") and response_active:
+                        log.info(f"[{call_sid}] Caller speech started; canceling current AI audio")
+                        try:
+                            await oai_ws.send(json.dumps({"type": "response.cancel"}))
+                        except Exception as exc:
+                            log.info(f"[{call_sid}] response.cancel ignored: {exc}")
+                        await clear_twilio_audio()
+                    else:
+                        log.info(f"[{call_sid}] Caller speech started")
 
-            elif etype == "error":
-                err = evt.get("error") or {}
-                log.error(f"[{call_sid}] [OAI_IN] error: {err}")
+                elif etype == "response.created":
+                    response_active = True
+                    session = sessions.get(call_sid, {})
+                    if session.get("pending_hangup") and not session.get("closing_response_started"):
+                        session["closing_response_started"] = True
+                        log.info(f"[{call_sid}] Closing response started")
+
+                elif etype == "response.done":
+                    response_active = False
+                    assistant_speaking = False
+                    suppress_input_until = max(suppress_input_until, asyncio.get_running_loop().time() + 0.25)
+                    session = sessions.get(call_sid, {})
+                    if (
+                        session.get("pending_hangup")
+                        and session.get("closing_response_started")
+                        and not session.get("hangup_scheduled")
+                    ):
+                        if can_schedule_hangup(session):
+                            session["hangup_scheduled"] = True
+                            payload = hangup_scheduled_payload(session)
+                            set_media_stream_exit_reason(lifecycle, "app_hangup_scheduled", payload)
+                            safe_record_call_event(call_sid, "hangup_scheduled", payload)
+                            log.info(f"[{call_sid}] Closing response done; scheduling hangup payload={payload}")
+                            asyncio.create_task(
+                                hangup_call(
+                                    call_sid,
+                                    reason=payload["reason"],
+                                    lead_id=payload["lead_id"],
+                                )
+                            )
+                        else:
+                            payload = hangup_scheduled_payload(session)
+                            safe_record_call_event(call_sid, "hangup_schedule_blocked", payload)
+                            log.error(f"[{call_sid}] Hangup schedule blocked by lifecycle guard: {payload}")
+
+                elif etype == "response.output_item.done":
+                    item = evt.get("item", {})
+                    if item.get("type") == "function_call" and item.get("name") == "submit_service_request":
+                        call_id = item.get("call_id", "")
+                        try:
+                            args = json.loads(item.get("arguments", "{}"))
+                        except json.JSONDecodeError:
+                            log.error(f"[{call_sid}] Bad function args: {item.get('arguments')!r}")
+                            args = {}
+
+                        session = sessions.get(call_sid, {})
+                        session["submit_service_request_seen"] = True
+                        log.info(f"[{call_sid}] submit_service_request: {args}")
+                        intake_policy = session.get("intake_policy")
+                        notification_policy = repository.get_notification_policy(session.get("tenant_id")) if session.get("tenant_id") else None
+                        safe_record_call_event(
+                            call_sid,
+                            "submit_service_request_attempt",
+                            {
+                                "args": args,
+                                "caller_spoke_since_initial_greeting": bool(
+                                    session.get("caller_spoke_since_initial_greeting")
+                                ),
+                                "last_response_create_reason": session.get("last_response_create_reason"),
+                            },
+                        )
+
+                        async def send_tenant_sms(send_call_sid: str, send_args: dict, send_from_number: str, send_to_number: str):
+                            return await send_sms(
+                                send_call_sid,
+                                send_args,
+                                send_from_number,
+                                send_to_number,
+                                intake_policy,
+                                notification_policy,
+                            )
+
+                        result = await process_service_request(
+                            call_sid,
+                            args,
+                            session.get("from_number", "unknown"),
+                            session.get("notification_sms_number", ""),
+                            send_tenant_sms,
+                            caller_text=" ".join(session.get("caller_text_parts", [])),
+                            tenant_id=session.get("tenant_id"),
+                            intake_state=session.setdefault("intake_state", {}),
+                        )
+                        session["complete"] = result.should_hangup
+                        session["last_service_request_result"] = result.output
+                        if result.output.get("lead_id"):
+                            session["lead_id"] = result.output.get("lead_id")
+                        if result.should_hangup:
+                            session["hangup_reason"] = result.output.get("reason") or "service_request_complete"
+
+                        # Return result so AI delivers the closing line
+                        await oai_ws.send(json.dumps({
+                            "type": "conversation.item.create",
+                            "item": {
+                                "type":    "function_call_output",
+                                "call_id": call_id,
+                                "output":  build_service_request_output(result.output),
+                            },
+                        }))
+                        if result.should_hangup:
+                            session["pending_hangup"] = True
+                            session["closing_response_started"] = False
+                        response_create = {"type": "response.create"}
+                        if result.closing_instructions:
+                            response_create["response"] = {"instructions": result.closing_instructions}
+                        await send_response_create(
+                            response_create_reason_for_service_result(result.output, result.should_hangup),
+                            response_create,
+                        )
+                        pending_question = session.setdefault("intake_state", {}).get("pending_extra_question") or {}
+                        if result.output.get("reason") in {
+                            "intake_policy_missing_extra_fields",
+                            "intake_policy_unanswered_extra_field",
+                        } and pending_question:
+                            pending_question["asked"] = True
+                            safe_record_call_event(
+                                call_sid,
+                                "intake_question_prompted",
+                                {"pending_extra_question": pending_question},
+                            )
+
+                elif etype == "error":
+                    err = evt.get("error") or {}
+                    log.error(f"[{call_sid}] [OAI_IN] error: {err}")
+                    safe_record_call_event(call_sid, "openai_realtime_error", {"error": err})
+        except websockets.exceptions.ConnectionClosed as exc:
+            if not lifecycle.get("closing_oai_from_media_finally"):
+                record_openai_websocket_closed(
+                    call_sid,
+                    stream_sid,
+                    exc,
+                    lifecycle,
+                    sessions.get(call_sid, {}),
+                    response_active,
+                    assistant_speaking,
+                )
+        except Exception as exc:
+            record_openai_reader_error(
+                call_sid,
+                stream_sid,
+                exc,
+                lifecycle,
+                sessions.get(call_sid, {}),
+                response_active,
+                assistant_speaking,
+            )
+        finally:
+            lifecycle["openai_reader_done"] = True
 
     # -- Twilio reader (main loop) --------------------------------------------
 
     try:
-        async for raw in ws.iter_text():
+        while True:
+            try:
+                raw = await ws.receive_text()
+            except WebSocketDisconnect as exc:
+                record_twilio_websocket_disconnect(
+                    call_sid,
+                    stream_sid,
+                    exc,
+                    lifecycle,
+                    sessions.get(call_sid, {}),
+                    response_active,
+                    assistant_speaking,
+                )
+                break
             data = json.loads(raw)
             evt  = data.get("event")
 
@@ -717,7 +1004,7 @@ async def media_stream(ws: WebSocket):
                     stream_sid,
                     prompt_version_id=session.get("prompt_version_id"),
                 )
-                repository.record_call_event(
+                safe_record_call_event(
                     call_sid,
                     "media_stream_started",
                     {
@@ -737,7 +1024,7 @@ async def media_stream(ws: WebSocket):
                 session_update = build_session_update(from_number, tenant, prompt_profile, intake_policy)
                 raw_su = json.dumps(session_update)
                 log.info(f"[{call_sid}] SENDING session.update")
-                asyncio.create_task(oai_reader())
+                oai_reader_task = asyncio.create_task(oai_reader())
                 await oai_ws.send(raw_su)
                 log.info(f"[{call_sid}] Session update sent")
 
@@ -758,22 +1045,79 @@ async def media_stream(ws: WebSocket):
                     }))
 
             elif evt == "stop":
-                log.info(f"[{call_sid}] Twilio stream stopped")
-                if call_sid:
-                    repository.record_call_event(call_sid, "media_stream_stopped", data.get("stop", {}))
-                    repository.mark_call_ended(call_sid, "stream_stopped")
+                record_twilio_stream_stopped(
+                    call_sid,
+                    stream_sid,
+                    data.get("stop", {}),
+                    lifecycle,
+                    sessions.get(call_sid, {}),
+                    response_active,
+                    assistant_speaking,
+                )
                 break
 
-    except WebSocketDisconnect:
-        log.info(f"[{call_sid}] Twilio disconnected")
     except Exception as exc:
+        set_media_stream_exit_reason(
+            lifecycle,
+            "exception",
+            {
+                "exception_type": type(exc).__name__,
+                "exception": str(exc),
+            },
+        )
+        safe_record_call_event(
+            call_sid,
+            "media_stream_exception",
+            {
+                "exception_type": type(exc).__name__,
+                "exception": str(exc),
+                "snapshot": media_stream_session_snapshot(
+                    call_sid,
+                    stream_sid,
+                    sessions.get(call_sid, {}),
+                    lifecycle,
+                    response_active,
+                    assistant_speaking,
+                ),
+            },
+        )
+        safe_mark_call_ended(call_sid, "media_stream_error")
         log.exception(f"[{call_sid}] media_stream error: {exc}")
     finally:
         if oai_ws:
             try:
+                lifecycle["closing_oai_from_media_finally"] = True
                 await oai_ws.close()
             except Exception:
                 pass
+        if oai_reader_task:
+            try:
+                await asyncio.wait_for(oai_reader_task, timeout=1.0)
+            except asyncio.TimeoutError:
+                oai_reader_task.cancel()
+                safe_record_call_event(
+                    call_sid,
+                    "openai_reader_cancelled",
+                    {"reason": "media_stream_finally_timeout"},
+                )
+            except Exception as exc:
+                record_openai_reader_error(
+                    call_sid,
+                    stream_sid,
+                    exc,
+                    lifecycle,
+                    sessions.get(call_sid, {}),
+                    response_active,
+                    assistant_speaking,
+                )
         if call_sid:
-            repository.record_call_event(call_sid, "media_stream_done", {"stream_sid": stream_sid})
-        log.info(f"[{call_sid}] media_stream done")
+            record_media_stream_done(
+                call_sid,
+                stream_sid,
+                sessions.get(call_sid, {}),
+                lifecycle,
+                response_active,
+                assistant_speaking,
+            )
+        else:
+            log.info("[unknown] media_stream done before call_sid was known")
