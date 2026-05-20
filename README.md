@@ -33,9 +33,10 @@ Documented deployment values:
 
 - `HOST` or `PUBLIC_HOST`: public hostname Twilio can reach, without `https://`
 - `OAI_URL` or `OPENAI_REALTIME_URL`: OpenAI Realtime WebSocket URL
+- `OPENAI_REALTIME_MODEL`: optional model selector, defaults to `gpt-realtime-1.5`; set to `gpt-realtime-2` only when testing Realtime 2
 - `DEFAULT_TENANT_NAME`, `DEFAULT_TENANT_SLUG`, `DEFAULT_TENANT_GREETING`: optional default tenant bootstrap values
 
-`HOST`/`PUBLIC_HOST` and `OAI_URL`/`OPENAI_REALTIME_URL` are read from the environment with the previous Railway host and OpenAI Realtime URL preserved as fallbacks.
+`HOST`/`PUBLIC_HOST` and `OAI_URL`/`OPENAI_REALTIME_URL` are read from the environment with the previous Railway host and OpenAI Realtime URL preserved as fallbacks. The app builds the final Realtime URL from the selected model so `OAI_URL` and `OPENAI_REALTIME_MODEL` do not need conflicting `model=` values.
 
 If `DATABASE_URL` is not set, the app falls back to local SQLite at `./local_dev.db`. That fallback is only for local/dev use. Do not rely on Railway's filesystem for long-term production lead storage.
 

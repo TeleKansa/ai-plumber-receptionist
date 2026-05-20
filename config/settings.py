@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 DEFAULT_HOST = "ai-plumber-receptionist-production.up.railway.app"
 DEFAULT_OAI_URL = "wss://api.openai.com/v1/realtime?model=gpt-realtime-1.5"
+DEFAULT_OPENAI_REALTIME_MODEL = "gpt-realtime-1.5"
 DEFAULT_DATABASE_URL = "sqlite:///./local_dev.db"
 DEFAULT_TENANT_NAME = "Default Plumbing"
 DEFAULT_TENANT_SLUG = "default"
@@ -24,6 +25,7 @@ class Settings:
     default_tenant_name: str
     default_tenant_slug: str
     default_tenant_greeting: str
+    openai_realtime_model: str = DEFAULT_OPENAI_REALTIME_MODEL
 
 
 def get_settings() -> Settings:
@@ -35,6 +37,7 @@ def get_settings() -> Settings:
         plumber_phone_number=os.getenv("PLUMBER_PHONE_NUMBER", ""),
         host=os.getenv("HOST") or os.getenv("PUBLIC_HOST") or DEFAULT_HOST,
         oai_url=os.getenv("OAI_URL") or os.getenv("OPENAI_REALTIME_URL") or DEFAULT_OAI_URL,
+        openai_realtime_model=os.getenv("OPENAI_REALTIME_MODEL", DEFAULT_OPENAI_REALTIME_MODEL),
         database_url=os.getenv("DATABASE_URL") or DEFAULT_DATABASE_URL,
         admin_password=os.getenv("ADMIN_PASSWORD", ""),
         default_tenant_name=os.getenv("DEFAULT_TENANT_NAME", DEFAULT_TENANT_NAME),

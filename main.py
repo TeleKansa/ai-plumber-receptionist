@@ -27,6 +27,12 @@ from storage.database import init_db
 from storage import repository
 from workflow.notifications import SmsSendResult, build_sms_body as build_notification_sms_body
 from workflow.prompt_builder import DEFAULT_GREETING, PromptBuilder
+from workflow.realtime_config import (
+    build_realtime_url,
+    effective_realtime_model,
+    realtime_reasoning_effort,
+    realtime_session_overrides,
+)
 from workflow.service_request import process_service_request
 from workflow.sms_result import build_service_request_output
 
@@ -51,6 +57,7 @@ TWILIO_PHONE_NUMBER  = settings.twilio_phone_number
 PLUMBER_PHONE_NUMBER = settings.plumber_phone_number
 HOST                 = settings.host
 OAI_URL              = settings.oai_url
+OPENAI_REALTIME_MODEL = settings.openai_realtime_model
 
 twilio = TwilioClient(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
 app    = FastAPI()
@@ -109,12 +116,14 @@ def build_session_update(
     tenant: Optional[dict] = None,
     prompt_profile: Optional[dict] = None,
     intake_policy: Optional[dict] = None,
+    realtime_model: Optional[str] = None,
 ) -> dict:
     session = {
         "type":        "realtime",
         "instructions": make_instructions(caller_number, tenant, prompt_profile, intake_policy),
         "tools":       TOOLS,
         "tool_choice": "auto",
+        **realtime_session_overrides(realtime_model),
     }
     return {
         "type": "session.update",
@@ -144,6 +153,8 @@ def response_create_event_payload(reason: str, response_create: dict, session: d
     instructions = response.get("instructions") or ""
     return {
         "reason": reason,
+        "realtime_model": session.get("realtime_model"),
+        "realtime_reasoning_effort": session.get("realtime_reasoning_effort"),
         "has_response_instructions": bool(instructions),
         "instructions": _event_text(instructions),
         "caller_spoke_since_initial_greeting": bool(session.get("caller_spoke_since_initial_greeting")),
@@ -212,6 +223,8 @@ def media_stream_session_snapshot(
         "call_sid": call_sid,
         "stream_sid": stream_sid,
         "tenant_id": session.get("tenant_id"),
+        "realtime_model": session.get("realtime_model"),
+        "realtime_reasoning_effort": session.get("realtime_reasoning_effort"),
         "media_stream_exit_reason": lifecycle.get("exit_reason") or "unknown",
         "media_stream_exit_detail": lifecycle.get("exit_detail") or {},
         "openai_reader_exit_reason": lifecycle.get("openai_reader_exit_reason"),
@@ -382,6 +395,7 @@ async def on_startup():
     log.info(f"  PLUMBER_PHONE_NUMBER : {PLUMBER_PHONE_NUMBER or 'MISSING'}")
     log.info(f"  HOST                 : {HOST}")
     log.info(f"  OAI_URL              : {OAI_URL}")
+    log.info(f"  OPENAI_REALTIME_MODEL: {OPENAI_REALTIME_MODEL}")
     log.info(f"  DATABASE_URL         : {'SET' if settings.database_url else 'MISSING'}")
     log.info(f"  ADMIN_PASSWORD       : {'SET' if settings.admin_password else 'MISSING'}")
     log.info("======================================================")
@@ -507,12 +521,16 @@ async def voice(request: Request):
 
     prompt_profile = repository.get_active_prompt_profile(tenant["id"])
     intake_policy = repository.get_intake_policy(tenant["id"])
+    realtime_model = effective_realtime_model(prompt_profile, settings)
+    realtime_effort = realtime_reasoning_effort(realtime_model)
     repository.create_or_update_call(
         call_sid,
         from_number,
         to_number,
         tenant_id=tenant["id"],
         prompt_version_id=prompt_profile["id"] if prompt_profile else None,
+        realtime_model=realtime_model,
+        realtime_reasoning_effort=realtime_effort,
     )
     repository.record_call_event(
         call_sid,
@@ -523,6 +541,8 @@ async def voice(request: Request):
             "tenant_id": tenant["id"],
             "tenant_phone_id": tenant_phone.get("id") if tenant_phone else None,
             "prompt_version_id": prompt_profile["id"] if prompt_profile else None,
+            "realtime_model": realtime_model,
+            "realtime_reasoning_effort": realtime_effort,
             "intake_policy_id": intake_policy["id"] if intake_policy else None,
         },
     )
@@ -537,6 +557,8 @@ async def voice(request: Request):
         "prompt_profile": prompt_profile,
         "intake_policy": intake_policy,
         "prompt_version_id": prompt_profile["id"] if prompt_profile else None,
+        "realtime_model": realtime_model,
+        "realtime_reasoning_effort": realtime_effort,
         "complete": False,
     }
 
@@ -986,11 +1008,17 @@ async def media_stream(ws: WebSocket):
                     or repository.get_active_prompt_profile(tenant["id"])
                 )
                 intake_policy = session.get("intake_policy") or repository.get_intake_policy(tenant["id"])
+                realtime_model = session.get("realtime_model") or effective_realtime_model(prompt_profile, settings)
+                realtime_effort = realtime_reasoning_effort(realtime_model)
+                realtime_url = build_realtime_url(realtime_model, OAI_URL)
                 session["tenant"] = tenant
                 session["tenant_id"] = tenant["id"]
                 session["prompt_profile"] = prompt_profile
                 session["intake_policy"] = intake_policy
                 session["prompt_version_id"] = prompt_profile["id"] if prompt_profile else None
+                session["realtime_model"] = realtime_model
+                session["realtime_reasoning_effort"] = realtime_effort
+                session["realtime_url"] = realtime_url
                 session["greeting"] = (
                     prompt_profile.get("greeting") if prompt_profile else tenant.get("greeting")
                 ) or DEFAULT_GREETING
@@ -1003,6 +1031,8 @@ async def media_stream(ws: WebSocket):
                     call_sid,
                     stream_sid,
                     prompt_version_id=session.get("prompt_version_id"),
+                    realtime_model=realtime_model,
+                    realtime_reasoning_effort=realtime_effort,
                 )
                 safe_record_call_event(
                     call_sid,
@@ -1010,18 +1040,20 @@ async def media_stream(ws: WebSocket):
                     {
                         **data.get("start", {}),
                         "prompt_version_id": session.get("prompt_version_id"),
+                        "realtime_model": realtime_model,
+                        "realtime_reasoning_effort": realtime_effort,
                         "intake_policy_id": intake_policy["id"] if intake_policy else None,
                     },
                 )
 
-                log.info(f"[{call_sid}] Connecting to OpenAI: {OAI_URL}")
+                log.info(f"[{call_sid}] Connecting to OpenAI model={realtime_model} url={realtime_url}")
                 oai_ws = await websockets.connect(
-                    OAI_URL,
+                    realtime_url,
                     extra_headers={"Authorization": f"Bearer {OPENAI_API_KEY}"},
                 )
                 log.info(f"[{call_sid}] OpenAI connected")
 
-                session_update = build_session_update(from_number, tenant, prompt_profile, intake_policy)
+                session_update = build_session_update(from_number, tenant, prompt_profile, intake_policy, realtime_model)
                 raw_su = json.dumps(session_update)
                 log.info(f"[{call_sid}] SENDING session.update")
                 oai_reader_task = asyncio.create_task(oai_reader())

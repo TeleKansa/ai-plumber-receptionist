@@ -144,7 +144,29 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("Generated Prompt Preview", prompt_response.text)
         self.assertIn("Back to tenant detail", prompt_response.text)
         self.assertIn("Back to tenants", prompt_response.text)
+        self.assertIn("Realtime Model", prompt_response.text)
+        self.assertIn("gpt-realtime-2", prompt_response.text)
         self.assertIn("New Tenant Plumbing, what&#x27;s going on?", prompt_response.text)
+
+        create_prompt_response = self.client.post(
+            f"/admin/tenants/{tenant_id}/prompt",
+            data={
+                "label": "Realtime 2 test",
+                "business_name": "New Tenant Plumbing",
+                "greeting": "New Tenant Plumbing, what's going on?",
+                "tone": "calm",
+                "verbosity": "brief",
+                "closing_line": "You're all set. We'll call back soon.",
+                "avoid_phrases": "",
+                "preferred_terms": "",
+                "extra_instructions_text": "",
+                "realtime_model": "gpt-realtime-2",
+            },
+            auth=("admin", "secret"),
+            follow_redirects=False,
+        )
+        self.assertEqual(create_prompt_response.status_code, 303)
+        self.assertEqual(repository.get_active_prompt_profile(tenant_id)["realtime_model"], "gpt-realtime-2")
 
         intake_policy = repository.get_intake_policy(tenant_id)
         self.assertIsNotNone(intake_policy)

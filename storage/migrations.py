@@ -71,6 +71,13 @@ def add_missing_tenant_columns(engine):
         call_columns = _columns_for(engine, "calls")
         if call_columns and "prompt_version_id" not in call_columns:
             conn.execute(text("ALTER TABLE calls ADD COLUMN prompt_version_id INTEGER"))
+        if call_columns and "realtime_model" not in call_columns:
+            conn.execute(text("ALTER TABLE calls ADD COLUMN realtime_model VARCHAR(128)"))
+        if call_columns and "realtime_reasoning_effort" not in call_columns:
+            conn.execute(text("ALTER TABLE calls ADD COLUMN realtime_reasoning_effort VARCHAR(32)"))
+        prompt_profile_columns = _columns_for(engine, "tenant_ai_profiles")
+        if prompt_profile_columns and "realtime_model" not in prompt_profile_columns:
+            conn.execute(text("ALTER TABLE tenant_ai_profiles ADD COLUMN realtime_model VARCHAR(128)"))
         phone_columns = _columns_for(engine, "tenant_phone_numbers")
         if phone_columns and "accepts_live_calls" not in phone_columns:
             conn.execute(text("ALTER TABLE tenant_phone_numbers ADD COLUMN accepts_live_calls BOOLEAN DEFAULT FALSE"))

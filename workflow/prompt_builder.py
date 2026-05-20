@@ -58,6 +58,7 @@ def prompt_profile_defaults(tenant: Optional[dict] = None) -> dict:
         "avoid_phrases": list(DEFAULT_AVOID_PHRASES),
         "preferred_terms": list(DEFAULT_PREFERRED_TERMS),
         "extra_instructions_text": "",
+        "realtime_model": "",
     }
 
 

@@ -20,6 +20,7 @@ from storage.models import (
 )
 from workflow.intake_policy import default_intake_policy
 from workflow.prompt_builder import prompt_profile_defaults
+from workflow.realtime_config import normalize_realtime_model
 
 
 def normalize_phone_number(value: Optional[str]) -> str:
@@ -140,6 +141,7 @@ def _prompt_profile_summary(profile: TenantAIProfile) -> dict:
         "avoid_phrases_json": profile.avoid_phrases_json,
         "preferred_terms_json": profile.preferred_terms_json,
         "extra_instructions_text": profile.extra_instructions_text,
+        "realtime_model": profile.realtime_model,
         "is_active": profile.is_active,
         "created_at": profile.created_at,
         "updated_at": profile.updated_at,
@@ -151,6 +153,8 @@ def _call_summary(call: Call) -> dict:
         "id": call.id,
         "tenant_id": call.tenant_id,
         "prompt_version_id": call.prompt_version_id,
+        "realtime_model": call.realtime_model,
+        "realtime_reasoning_effort": call.realtime_reasoning_effort,
         "call_sid": call.call_sid,
         "stream_sid": call.stream_sid,
         "from_number": call.from_number,
@@ -265,6 +269,7 @@ def _create_default_prompt_profile(db, tenant: Tenant, activate: bool = True) ->
         avoid_phrases_json=json.dumps(defaults["avoid_phrases"]),
         preferred_terms_json=json.dumps(defaults["preferred_terms"]),
         extra_instructions_text=defaults["extra_instructions_text"],
+        realtime_model=defaults.get("realtime_model") or None,
         is_active=activate,
     )
     db.add(profile)
@@ -563,6 +568,7 @@ def create_prompt_profile(
     avoid_phrases: list[str],
     preferred_terms: list[str],
     extra_instructions_text: str = "",
+    realtime_model: str = "",
     activate: bool = True,
 ) -> Optional[dict]:
     with session_scope() as db:
@@ -591,6 +597,7 @@ def create_prompt_profile(
             avoid_phrases_json=json.dumps([phrase.strip() for phrase in avoid_phrases if phrase.strip()]),
             preferred_terms_json=json.dumps([term.strip() for term in preferred_terms if term.strip()]),
             extra_instructions_text=extra_instructions_text.strip(),
+            realtime_model=normalize_realtime_model(realtime_model) if (realtime_model or "").strip() else None,
             is_active=activate,
         )
         db.add(profile)
@@ -775,6 +782,8 @@ def create_or_update_call(
     to_number: str,
     tenant_id: Optional[int] = None,
     prompt_version_id: Optional[int] = None,
+    realtime_model: Optional[str] = None,
+    realtime_reasoning_effort: Optional[str] = None,
     default_to_tenant: bool = True,
     status: str = "voice_received",
 ) -> dict:
@@ -787,6 +796,8 @@ def create_or_update_call(
             call = Call(
                 tenant_id=resolved_tenant_id,
                 prompt_version_id=prompt_version_id,
+                realtime_model=realtime_model,
+                realtime_reasoning_effort=realtime_reasoning_effort,
                 call_sid=call_sid,
                 from_number=from_number,
                 to_number=to_number,
@@ -801,6 +812,10 @@ def create_or_update_call(
                 call.tenant_id = resolved_tenant_id
             if prompt_version_id is not None:
                 call.prompt_version_id = prompt_version_id
+            if realtime_model is not None:
+                call.realtime_model = realtime_model
+            if realtime_reasoning_effort is not None:
+                call.realtime_reasoning_effort = realtime_reasoning_effort
             call.from_number = from_number or call.from_number
             call.to_number = to_number or call.to_number
             if status:
@@ -808,13 +823,21 @@ def create_or_update_call(
         return _call_summary(call)
 
 
-def update_call_stream_started(call_sid: str, stream_sid: str, prompt_version_id: Optional[int] = None) -> dict:
+def update_call_stream_started(
+    call_sid: str,
+    stream_sid: str,
+    prompt_version_id: Optional[int] = None,
+    realtime_model: Optional[str] = None,
+    realtime_reasoning_effort: Optional[str] = None,
+) -> dict:
     with session_scope() as db:
         call = _get_call(db, call_sid)
         if call is None:
             call = Call(
                 tenant_id=_default_tenant(db).id,
                 prompt_version_id=prompt_version_id,
+                realtime_model=realtime_model,
+                realtime_reasoning_effort=realtime_reasoning_effort,
                 call_sid=call_sid,
                 stream_sid=stream_sid,
                 status="stream_started",
@@ -824,6 +847,10 @@ def update_call_stream_started(call_sid: str, stream_sid: str, prompt_version_id
             call.stream_sid = stream_sid
             if prompt_version_id is not None and call.prompt_version_id is None:
                 call.prompt_version_id = prompt_version_id
+            if realtime_model is not None:
+                call.realtime_model = realtime_model
+            if realtime_reasoning_effort is not None:
+                call.realtime_reasoning_effort = realtime_reasoning_effort
             call.status = "stream_started"
         db.flush()
         return _call_summary(call)

@@ -15,6 +15,7 @@ ENV_NAMES = (
     "PUBLIC_HOST",
     "OAI_URL",
     "OPENAI_REALTIME_URL",
+    "OPENAI_REALTIME_MODEL",
     "DATABASE_URL",
     "ADMIN_PASSWORD",
     "DEFAULT_TENANT_NAME",
@@ -32,6 +33,7 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.host, DEFAULT_HOST)
         self.assertEqual(settings.oai_url, DEFAULT_OAI_URL)
+        self.assertEqual(settings.openai_realtime_model, "gpt-realtime-1.5")
         self.assertEqual(settings.database_url, "sqlite:///./local_dev.db")
         self.assertEqual(settings.default_tenant_name, "Default Plumbing")
         self.assertEqual(settings.default_tenant_slug, "default")
@@ -42,6 +44,7 @@ class SettingsTests(unittest.TestCase):
             {
                 "HOST": "example.test",
                 "OAI_URL": "wss://example.test/realtime",
+                "OPENAI_REALTIME_MODEL": "gpt-realtime-2",
             },
             clear=True,
         ):
@@ -49,6 +52,7 @@ class SettingsTests(unittest.TestCase):
 
         self.assertEqual(settings.host, "example.test")
         self.assertEqual(settings.oai_url, "wss://example.test/realtime")
+        self.assertEqual(settings.openai_realtime_model, "gpt-realtime-2")
 
     def test_settings_support_documented_aliases(self):
         with patch.dict(

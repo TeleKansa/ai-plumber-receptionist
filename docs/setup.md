@@ -22,6 +22,7 @@ For a deployed environment, confirm:
 - `DATABASE_URL` points to Postgres for durable lead storage.
 - `ADMIN_PASSWORD` is set before using `/admin`.
 - The default tenant uses `TWILIO_PHONE_NUMBER` and `PLUMBER_PHONE_NUMBER`.
+- `OPENAI_REALTIME_MODEL` is unset or `gpt-realtime-1.5` for the current stable flow; set it to `gpt-realtime-2` only for Realtime 2 testing.
 - Twilio can reach `POST /voice`.
 - Twilio can establish `wss://<public-host>/media-stream`.
 - `/health` returns `{"status":"ok"}`.

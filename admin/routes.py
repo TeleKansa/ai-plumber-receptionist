@@ -13,6 +13,7 @@ from storage import repository
 from workflow.intake_policy import conditional_questions, extra_questions, policy_to_json
 from workflow.notifications import build_sms_body
 from workflow.prompt_builder import PromptBuilder
+from workflow.realtime_config import SUPPORTED_REALTIME_MODELS, effective_realtime_model, realtime_reasoning_effort
 
 
 security = HTTPBasic(auto_error=False)
@@ -179,13 +180,14 @@ def _prompt_history_table(tenant_id: int, profiles: list[dict]) -> str:
             f"<td>{escape(profile.get('label') or '')}</td>"
             f"<td>{escape(profile.get('business_name') or '')}</td>"
             f"<td>{escape(profile.get('greeting') or '')}</td>"
+            f"<td>{escape(profile.get('realtime_model') or 'env/default')}</td>"
             f"<td>{escape('yes' if profile.get('is_active') else 'no')}</td>"
             f"<td>{activate}</td>"
             "</tr>"
         )
     return (
         "<table><thead><tr>"
-        "<th>id</th><th>version</th><th>label</th><th>business_name</th><th>greeting</th><th>active</th><th>action</th>"
+        "<th>id</th><th>version</th><th>label</th><th>business_name</th><th>greeting</th><th>model</th><th>active</th><th>action</th>"
         "</tr></thead><tbody>"
         f"{''.join(rows)}"
         "</tbody></table>"
@@ -312,7 +314,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
         body = "\n".join(
             [
                 "<h2>Recent Calls</h2>",
-                _render_table(calls, ["tenant_id", "prompt_version_id", "call_sid", "from_number", "to_number", "stream_sid", "status", "started_at", "ended_at"]),
+                _render_table(calls, ["tenant_id", "prompt_version_id", "realtime_model", "realtime_reasoning_effort", "call_sid", "from_number", "to_number", "stream_sid", "status", "started_at", "ended_at"]),
                 "<h2>Recent Leads</h2>",
                 _render_table(leads, ["id", "tenant_id", "call_sid", "name", "callback", "address", "issue", "urgency", "priority", "priority_reason", "extra_fields", "status", "created_at"]),
                 "<h2>Recent Notifications</h2>",
@@ -462,7 +464,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<button type=\"submit\">Add Phone Number</button>",
                 "</form>",
                 "<h3>Recent Calls</h3>",
-                _render_table(calls, ["call_sid", "prompt_version_id", "from_number", "to_number", "status", "started_at", "ended_at"]),
+                _render_table(calls, ["call_sid", "prompt_version_id", "realtime_model", "realtime_reasoning_effort", "from_number", "to_number", "status", "started_at", "ended_at"]),
                 "<h3>Recent Leads</h3>",
                 _render_table(leads, ["id", "call_sid", "name", "callback", "address", "issue", "urgency", "priority", "priority_reason", "extra_fields", "status", "created_at"]),
                 "<h3>Recent Notifications</h3>",
@@ -738,6 +740,11 @@ def create_admin_router(settings: Settings) -> APIRouter:
         intake_policy = repository.get_intake_policy(tenant_id)
         profiles = repository.list_prompt_profiles(tenant_id)
         preview = PromptBuilder().build("913-555-0123", tenant=tenant, profile=active_profile, intake_policy=intake_policy) if active_profile else ""
+        active_realtime_model = effective_realtime_model(active_profile, settings)
+        active_reasoning_effort = realtime_reasoning_effort(active_realtime_model) or "not used"
+        model_options = [("", f"Use env/default ({settings.openai_realtime_model})")] + [
+            (model, model) for model in SUPPORTED_REALTIME_MODELS
+        ]
         body = "\n".join(
             [
                 f"<h2>{escape(tenant['name'])} Prompt</h2>",
@@ -745,7 +752,9 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<h3>Core workflow is locked</h3>",
                 "<p>Style/persona settings can change wording, but required fields cannot be changed here. Required fields stay: issue, urgency, address, callback, name. First name is enough; last name is not required.</p>",
                 "<h3>Active Prompt Version</h3>",
-                _render_table([active_profile] if active_profile else [], ["id", "version", "label", "business_name", "greeting", "tone", "verbosity", "closing_line", "is_active"]),
+                _render_table([active_profile] if active_profile else [], ["id", "version", "label", "business_name", "greeting", "tone", "verbosity", "closing_line", "realtime_model", "is_active"]),
+                "<h3>Realtime Model</h3>",
+                f"<p>Current active model: <strong>{escape(active_realtime_model)}</strong>. Reasoning effort: <strong>{escape(active_reasoning_effort)}</strong>. Realtime 2 uses low reasoning effort for voice latency testing.</p>",
                 "<h3>Create New Prompt Version</h3>",
                 f'<form method="post" action="/admin/tenants/{tenant_id}/prompt">',
                 _input("label", active_profile.get("label") if active_profile else "Updated prompt"),
@@ -765,6 +774,8 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 _textarea("preferred_terms", _lines_from_json(active_profile.get("preferred_terms_json") if active_profile else ""), rows=5),
                 "<br><br>",
                 _textarea("extra_instructions_text", active_profile.get("extra_instructions_text") if active_profile else "", rows=6),
+                "<br><br>",
+                _select("realtime_model", model_options, active_profile.get("realtime_model") if active_profile else ""),
                 "<br><br>",
                 "<button type=\"submit\">Create and Activate New Version</button>",
                 "</form>",
@@ -790,6 +801,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
             avoid_phrases=_lines_to_list(str(form.get("avoid_phrases", ""))),
             preferred_terms=_lines_to_list(str(form.get("preferred_terms", ""))),
             extra_instructions_text=str(form.get("extra_instructions_text", "")).strip(),
+            realtime_model=str(form.get("realtime_model", "")).strip(),
             activate=True,
         )
         if not profile:
