@@ -108,6 +108,28 @@ def _select(name: str, options: list[tuple[str, str]], selected: str = "") -> st
     return f'<label>{escape(name)}<br><select name="{escape(name)}">{"".join(option_html)}</select></label>'
 
 
+def _realtime_model_select(selected: str = "", fallback_model: str = "gpt-realtime-1.5") -> str:
+    options = [
+        ("", "env/default"),
+        ("gpt-realtime-1.5", "gpt-realtime-1.5"),
+        ("gpt-realtime-2", "gpt-realtime-2"),
+    ]
+    option_html = []
+    for value, label in options:
+        selected_attr = " selected" if value == (selected or "") else ""
+        option_html.append(f'<option value="{escape(value)}"{selected_attr}>{escape(label)}</option>')
+    return (
+        '<div style="border: 1px solid #ddd; padding: 12px; margin: 12px 0; background: #fafafa;">'
+        '<label><strong>Realtime Model:</strong><br>'
+        f'<select name="realtime_model" style="min-width: 260px;">{"".join(option_html)}</select>'
+        "</label>"
+        f"<p><code>env/default</code> uses Railway <code>OPENAI_REALTIME_MODEL</code> or the app default "
+        f"<code>{escape(fallback_model)}</code>.</p>"
+        "<p><code>gpt-realtime-2</code> uses <code>reasoning.effort=low</code>.</p>"
+        "</div>"
+    )
+
+
 def _textarea(name: str, value: str = "", rows: int = 2) -> str:
     return (
         f'<label>{escape(name)}<br>'
@@ -742,9 +764,11 @@ def create_admin_router(settings: Settings) -> APIRouter:
         preview = PromptBuilder().build("913-555-0123", tenant=tenant, profile=active_profile, intake_policy=intake_policy) if active_profile else ""
         active_realtime_model = effective_realtime_model(active_profile, settings)
         active_reasoning_effort = realtime_reasoning_effort(active_realtime_model) or "not used"
-        model_options = [("", f"Use env/default ({settings.openai_realtime_model})")] + [
-            (model, model) for model in SUPPORTED_REALTIME_MODELS
-        ]
+        active_prompt_row = dict(active_profile) if active_profile else {}
+        if active_prompt_row:
+            active_prompt_row["realtime_model"] = active_profile.get("realtime_model") or f"env/default ({active_realtime_model})"
+            active_prompt_row["realtime_reasoning_effort"] = active_reasoning_effort
+            active_prompt_row["supported_model_options"] = ", ".join(SUPPORTED_REALTIME_MODELS)
         body = "\n".join(
             [
                 f"<h2>{escape(tenant['name'])} Prompt</h2>",
@@ -752,13 +776,15 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<h3>Core workflow is locked</h3>",
                 "<p>Style/persona settings can change wording, but required fields cannot be changed here. Required fields stay: issue, urgency, address, callback, name. First name is enough; last name is not required.</p>",
                 "<h3>Active Prompt Version</h3>",
-                _render_table([active_profile] if active_profile else [], ["id", "version", "label", "business_name", "greeting", "tone", "verbosity", "closing_line", "realtime_model", "is_active"]),
+                _render_table([active_prompt_row] if active_prompt_row else [], ["id", "version", "label", "business_name", "greeting", "tone", "verbosity", "closing_line", "realtime_model", "realtime_reasoning_effort", "is_active"]),
                 "<h3>Realtime Model</h3>",
                 f"<p>Current active model: <strong>{escape(active_realtime_model)}</strong>. Reasoning effort: <strong>{escape(active_reasoning_effort)}</strong>. Realtime 2 uses low reasoning effort for voice latency testing.</p>",
                 "<h3>Create New Prompt Version</h3>",
                 f'<form method="post" action="/admin/tenants/{tenant_id}/prompt">',
                 _input("label", active_profile.get("label") if active_profile else "Updated prompt"),
                 "<br><br>",
+                _realtime_model_select(active_profile.get("realtime_model") if active_profile else "", settings.openai_realtime_model),
+                "<br>",
                 _input("business_name", active_profile.get("business_name") if active_profile else tenant.get("business_name") or tenant.get("name") or ""),
                 "<br><br>",
                 _textarea("greeting", active_profile.get("greeting") if active_profile else tenant.get("greeting") or "", rows=2),
@@ -774,8 +800,6 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 _textarea("preferred_terms", _lines_from_json(active_profile.get("preferred_terms_json") if active_profile else ""), rows=5),
                 "<br><br>",
                 _textarea("extra_instructions_text", active_profile.get("extra_instructions_text") if active_profile else "", rows=6),
-                "<br><br>",
-                _select("realtime_model", model_options, active_profile.get("realtime_model") if active_profile else ""),
                 "<br><br>",
                 "<button type=\"submit\">Create and Activate New Version</button>",
                 "</form>",
@@ -892,6 +916,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
     @router.get("/admin/calls/{call_sid}", response_class=HTMLResponse)
     async def admin_call_detail(call_sid: str):
         detail = repository.get_call_detail(call_sid)
+        call_summary = detail.get("call")
         lifecycle_event_names = {
             "media_stream_started",
             "response_create_sent",
@@ -918,6 +943,11 @@ def create_admin_router(settings: Settings) -> APIRouter:
         )
         body = "\n".join(
             [
+                "<h2>Call Summary</h2>",
+                _render_table(
+                    [call_summary] if call_summary else [],
+                    ["call_sid", "tenant_id", "prompt_version_id", "realtime_model", "realtime_reasoning_effort", "from_number", "to_number", "status", "started_at", "ended_at"],
+                ),
                 "<h2>Lifecycle Debug</h2>",
                 "<p>These events distinguish app hangup, Twilio stop, websocket disconnect, OpenAI reader failure, and unknown exits.</p>",
                 "<h3>Latest Exit Snapshot</h3>",

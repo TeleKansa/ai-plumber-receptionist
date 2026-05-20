@@ -39,8 +39,15 @@ class AdminRoutesTests(unittest.TestCase):
     def tearDown(self):
         self.tmpdir.cleanup()
 
-    def test_call_detail_shows_validation_failure_payload(self):
-        repository.create_or_update_call("CALL_ADMIN_FAIL", "+19135550123", "+19135550124")
+    def test_call_detail_shows_validation_failure_payload_and_realtime_model(self):
+        repository.create_or_update_call(
+            "CALL_ADMIN_FAIL",
+            "+19135550123",
+            "+19135550124",
+            prompt_version_id=42,
+            realtime_model="gpt-realtime-2",
+            realtime_reasoning_effort="low",
+        )
         repository.record_call_event(
             "CALL_ADMIN_FAIL",
             "validation_failed",
@@ -70,6 +77,12 @@ class AdminRoutesTests(unittest.TestCase):
         response = self.client.get("/admin/calls/CALL_ADMIN_FAIL", auth=("admin", "secret"))
 
         self.assertEqual(response.status_code, 200)
+        self.assertIn("Call Summary", response.text)
+        self.assertIn("prompt_version_id", response.text)
+        self.assertIn("realtime_model", response.text)
+        self.assertIn("realtime_reasoning_effort", response.text)
+        self.assertIn("gpt-realtime-2", response.text)
+        self.assertIn("low", response.text)
         self.assertIn("Lifecycle Debug", response.text)
         self.assertIn("twilio_websocket_disconnected", response.text)
         self.assertIn("media_stream_exit_reason", response.text)
@@ -145,6 +158,16 @@ class AdminRoutesTests(unittest.TestCase):
         self.assertIn("Back to tenant detail", prompt_response.text)
         self.assertIn("Back to tenants", prompt_response.text)
         self.assertIn("Realtime Model", prompt_response.text)
+        self.assertIn("Realtime Model:", prompt_response.text)
+        self.assertIn('select name="realtime_model"', prompt_response.text)
+        self.assertIn('option value="" selected>env/default</option>', prompt_response.text)
+        self.assertIn('option value="gpt-realtime-1.5">gpt-realtime-1.5</option>', prompt_response.text)
+        self.assertIn('option value="gpt-realtime-2">gpt-realtime-2</option>', prompt_response.text)
+        self.assertIn("realtime_model", prompt_response.text)
+        self.assertIn("realtime_reasoning_effort", prompt_response.text)
+        self.assertIn("env/default", prompt_response.text)
+        self.assertIn("OPENAI_REALTIME_MODEL", prompt_response.text)
+        self.assertIn("reasoning.effort=low", prompt_response.text)
         self.assertIn("gpt-realtime-2", prompt_response.text)
         self.assertIn("New Tenant Plumbing, what&#x27;s going on?", prompt_response.text)
 
