@@ -932,6 +932,16 @@ def create_admin_router(settings: Settings) -> APIRouter:
             "hangup_scheduled",
             "hangup_schedule_blocked",
             "call_ended",
+            "barge_in_detected",
+            "caller_audio_forwarded_during_assistant",
+            "function_args_done",
+            "tool_args_output_item_partial_ignored",
+            "tool_args_parse_failed",
+            "tool_call_incomplete",
+            "tool_call_duplicate_ignored",
+            "response_create_delayed",
+            "response_create_delay_flushed",
+            "response_cancel_not_active_reconciled",
         }
         events = detail.get("events") or []
         lifecycle_events = [

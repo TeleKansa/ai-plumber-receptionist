@@ -4,12 +4,13 @@ AI Plumber Receptionist — OpenAI Realtime API
 Twilio voice → /media-stream WebSocket → OpenAI Realtime (bidirectional bridge)
 
 Audio: Twilio mulaw 8kHz ↔ pcm16 24kHz ↔ OpenAI (transcoding via audioop)
-Function calling: response.output_item.done (GA API event name)
+Function calling: streamed response.function_call_arguments.* with output_item fallback
 """
 
 import asyncio
 import audioop
 import base64
+from dataclasses import dataclass
 import json
 import logging
 from typing import Optional
@@ -148,6 +149,238 @@ def _event_text(value: object, limit: int = 800) -> str:
     return text if len(text) <= limit else f"{text[:limit]}..."
 
 
+TOOL_ARGS_PREVIEW_LIMIT = 800
+
+
+@dataclass(frozen=True)
+class ToolArgsParseResult:
+    state: str
+    args: Optional[dict] = None
+    source: Optional[str] = None
+    error: Optional[str] = None
+    raw_preview: str = ""
+
+
+def _tool_aliases(call_id: Optional[str] = None, item_id: Optional[str] = None, response_id: Optional[str] = None) -> list[str]:
+    aliases = []
+    if call_id:
+        aliases.append(f"call:{call_id}")
+    if item_id:
+        aliases.append(f"item:{item_id}")
+    if response_id:
+        aliases.append(f"response:{response_id}")
+    return aliases
+
+
+def get_tool_call_record(
+    records: dict,
+    call_id: Optional[str] = None,
+    item_id: Optional[str] = None,
+    response_id: Optional[str] = None,
+) -> dict:
+    aliases = _tool_aliases(call_id, item_id, response_id)
+    record = None
+    for alias in aliases:
+        if alias in records:
+            record = records[alias]
+            break
+    if record is None:
+        record = {
+            "argument_deltas": [],
+            "processed": False,
+            "parse_failure_recorded": False,
+            "incomplete_recorded": False,
+        }
+    if call_id:
+        record["call_id"] = call_id
+    if item_id:
+        record["item_id"] = item_id
+    if response_id:
+        record["response_id"] = response_id
+    for alias in _tool_aliases(record.get("call_id"), record.get("item_id"), record.get("response_id")):
+        records[alias] = record
+    return record
+
+
+def _tool_event_status_values(evt: dict) -> set[str]:
+    item = evt.get("item") or {}
+    values = {
+        str(evt.get("status") or "").lower(),
+        str(item.get("status") or "").lower(),
+        str(evt.get("finish_reason") or "").lower(),
+        str(evt.get("reason") or "").lower(),
+    }
+    for details in (evt.get("status_details"), item.get("status_details")):
+        if isinstance(details, dict):
+            values.add(str(details.get("type") or "").lower())
+            values.add(str(details.get("reason") or "").lower())
+    return {value for value in values if value}
+
+
+def function_call_event_is_incomplete(evt: dict) -> bool:
+    incomplete_markers = {
+        "cancelled",
+        "canceled",
+        "incomplete",
+        "failed",
+        "interrupted",
+        "cancelled_by_user",
+        "turn_detected",
+    }
+    return bool(_tool_event_status_values(evt) & incomplete_markers)
+
+
+def register_function_call_delta(records: dict, evt: dict) -> dict:
+    record = get_tool_call_record(
+        records,
+        call_id=evt.get("call_id"),
+        item_id=evt.get("item_id"),
+        response_id=evt.get("response_id"),
+    )
+    record.setdefault("argument_deltas", []).append(evt.get("delta") or "")
+    record["has_streamed_arguments"] = True
+    return record
+
+
+def register_function_call_done(records: dict, evt: dict) -> dict:
+    record = get_tool_call_record(
+        records,
+        call_id=evt.get("call_id"),
+        item_id=evt.get("item_id"),
+        response_id=evt.get("response_id"),
+    )
+    record["final_event_seen"] = True
+    if "arguments" in evt:
+        record["final_arguments"] = evt.get("arguments") or ""
+    if evt.get("name"):
+        record["name"] = evt.get("name")
+    record["has_streamed_arguments"] = True
+    if function_call_event_is_incomplete(evt):
+        record["incomplete"] = True
+        record["incomplete_status_values"] = sorted(_tool_event_status_values(evt))
+    return record
+
+
+def register_function_call_output_item(records: dict, evt: dict) -> dict:
+    item = evt.get("item") or {}
+    record = get_tool_call_record(
+        records,
+        call_id=item.get("call_id"),
+        item_id=item.get("id") or evt.get("item_id"),
+        response_id=evt.get("response_id"),
+    )
+    record["output_item_seen"] = True
+    record["output_item_arguments"] = item.get("arguments")
+    if item.get("name"):
+        record["name"] = item.get("name")
+    if function_call_event_is_incomplete(evt):
+        record["incomplete"] = True
+        record["incomplete_status_values"] = sorted(_tool_event_status_values(evt))
+    return record
+
+
+def _tool_args_source(record: dict, allow_output_item_fallback: bool = False) -> tuple[Optional[str], Optional[str]]:
+    if record.get("final_arguments") is not None:
+        return record.get("final_arguments") or "", "response.function_call_arguments.done"
+    if record.get("final_event_seen") and record.get("argument_deltas"):
+        return "".join(record.get("argument_deltas") or []), "response.function_call_arguments.delta"
+    if allow_output_item_fallback and not record.get("has_streamed_arguments"):
+        if record.get("output_item_arguments") is not None:
+            return record.get("output_item_arguments") or "", "response.output_item.done"
+    return None, None
+
+
+def tool_call_args_for_processing(record: dict, allow_output_item_fallback: bool = False) -> ToolArgsParseResult:
+    if record.get("processed"):
+        return ToolArgsParseResult(state="already_processed")
+    if record.get("incomplete"):
+        return ToolArgsParseResult(
+            state="incomplete",
+            source="response.function_call_arguments.done" if record.get("final_event_seen") else "response.output_item.done",
+            error="tool call was marked incomplete/cancelled/interrupted",
+        )
+    raw_args, source = _tool_args_source(record, allow_output_item_fallback=allow_output_item_fallback)
+    if raw_args is None:
+        return ToolArgsParseResult(state="waiting")
+    raw_preview = _event_text(raw_args, TOOL_ARGS_PREVIEW_LIMIT)
+    try:
+        parsed = json.loads(raw_args)
+    except json.JSONDecodeError as exc:
+        return ToolArgsParseResult(
+            state="parse_failed",
+            source=source,
+            error=str(exc),
+            raw_preview=raw_preview,
+        )
+    if not isinstance(parsed, dict):
+        return ToolArgsParseResult(
+            state="parse_failed",
+            source=source,
+            error=f"expected object arguments, got {type(parsed).__name__}",
+            raw_preview=raw_preview,
+        )
+    return ToolArgsParseResult(state="ready", args=parsed, source=source, raw_preview=raw_preview)
+
+
+def unique_tool_call_records(records: dict) -> list[dict]:
+    unique = []
+    seen = set()
+    for record in records.values():
+        identity = id(record)
+        if identity in seen:
+            continue
+        seen.add(identity)
+        unique.append(record)
+    return unique
+
+
+def tool_call_payload(record: dict, parse_result: Optional[ToolArgsParseResult] = None) -> dict:
+    payload = {
+        "call_id": record.get("call_id"),
+        "item_id": record.get("item_id"),
+        "response_id": record.get("response_id"),
+        "name": record.get("name"),
+        "source": parse_result.source if parse_result else None,
+        "state": parse_result.state if parse_result else None,
+        "error": parse_result.error if parse_result else None,
+        "raw_args_preview": parse_result.raw_preview if parse_result else "",
+    }
+    if record.get("incomplete_status_values"):
+        payload["incomplete_status_values"] = record.get("incomplete_status_values")
+    return payload
+
+
+def build_tool_args_parse_failed_output() -> dict:
+    return {
+        "success": False,
+        "reason": "tool_args_parse_failed",
+        "lead_saved": False,
+        "guidance": (
+            "The submit_service_request tool arguments were malformed or incomplete. "
+            "Retry submit_service_request with valid JSON using the details already collected. "
+            "Do not ask the caller to repeat everything; ask only one genuinely missing field if needed."
+        ),
+    }
+
+
+def should_delay_response_create(reason: str, response_active: bool = False, caller_speaking: bool = False) -> Optional[str]:
+    if response_active:
+        return "response_active"
+    if caller_speaking and reason in {"validation_followup", "intake_missing_extra", "tool_args_retry"}:
+        return "caller_speaking"
+    return None
+
+
+def barge_in_event_payload(session: dict, response_active: bool, assistant_speaking: bool, suppress_active: bool) -> dict:
+    return {
+        "response_active": bool(response_active),
+        "assistant_speaking": bool(assistant_speaking),
+        "suppress_active": bool(suppress_active),
+        "last_ai_transcript": _event_text(session.get("last_ai_transcript"), limit=500),
+        "last_response_create_reason": session.get("last_response_create_reason"),
+    }
+
+
 def response_create_event_payload(reason: str, response_create: dict, session: dict) -> dict:
     response = response_create.get("response") or {}
     instructions = response.get("instructions") or ""
@@ -241,6 +474,10 @@ def media_stream_session_snapshot(
         "submit_service_request_seen": bool(session.get("submit_service_request_seen")),
         "lead_id": session.get("lead_id"),
         "hangup_reason": session.get("hangup_reason"),
+        "caller_audio_overlap_frames": int(session.get("caller_audio_overlap_frames") or 0),
+        "caller_audio_overlap_bytes": int(session.get("caller_audio_overlap_bytes") or 0),
+        "dropped_audio_frames": int(session.get("dropped_audio_frames") or 0),
+        "dropped_audio_bytes": int(session.get("dropped_audio_bytes") or 0),
     }
 
 
@@ -650,6 +887,7 @@ async def media_stream(ws: WebSocket):
     oai_to_twilio_state = None
     assistant_speaking = False
     response_active = False
+    caller_speaking = False
     suppress_input_until = 0.0
     lifecycle = {
         "exit_reason": "unknown",
@@ -670,19 +908,229 @@ async def media_stream(ws: WebSocket):
             }))
 
     async def oai_reader():
-        nonlocal assistant_speaking, oai_to_twilio_state, response_active, suppress_input_until
+        nonlocal assistant_speaking, oai_to_twilio_state, response_active, caller_speaking, suppress_input_until
         assistant_transcript = ""
         caller_transcript = ""
+        function_call_records: dict = {}
+        pending_response_create: Optional[tuple[str, dict]] = None
 
         async def send_response_create(reason: str, response_create: dict):
+            nonlocal pending_response_create
             session = sessions.setdefault(call_sid, {})
             payload = response_create_event_payload(reason, response_create, session)
+            delay_reason = should_delay_response_create(
+                reason,
+                response_active=response_active,
+                caller_speaking=caller_speaking,
+            )
+            if delay_reason:
+                pending_response_create = (reason, response_create)
+                safe_record_call_event(
+                    call_sid,
+                    "response_create_delayed",
+                    {**payload, "delay_reason": delay_reason},
+                )
+                log.info(f"[{call_sid}] response.create delayed reason={reason} delay_reason={delay_reason}")
+                return False
             if reason == "initial_greeting":
                 session["initial_greeting_sent_at"] = asyncio.get_running_loop().time()
                 session["caller_spoke_since_initial_greeting"] = False
             safe_record_call_event(call_sid, "response_create_sent", payload)
             session["last_response_create_reason"] = reason
             await oai_ws.send(json.dumps(response_create))
+            return True
+
+        async def flush_pending_response_create(trigger: str):
+            nonlocal pending_response_create
+            if not pending_response_create:
+                return False
+            if response_active or caller_speaking:
+                return False
+            reason, response_create = pending_response_create
+            pending_response_create = None
+            safe_record_call_event(
+                call_sid,
+                "response_create_delay_flushed",
+                {"reason": reason, "trigger": trigger},
+            )
+            return await send_response_create(reason, response_create)
+
+        async def send_tool_args_failure(record: dict, parse_result: ToolArgsParseResult):
+            if record.get("parse_failure_recorded"):
+                return
+            record["parse_failure_recorded"] = True
+            payload = tool_call_payload(record, parse_result)
+            log.error(f"[{call_sid}] tool args parse failed: {payload}")
+            safe_record_call_event(call_sid, "tool_args_parse_failed", payload)
+            call_id = record.get("call_id")
+            if not call_id:
+                return
+            await oai_ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": call_id,
+                    "output": build_service_request_output(build_tool_args_parse_failed_output()),
+                },
+            }))
+            await send_response_create(
+                "tool_args_retry",
+                {
+                    "type": "response.create",
+                    "response": {
+                        "instructions": (
+                            "Retry submit_service_request with valid JSON using the caller details already collected. "
+                            "Do not ask the caller to repeat everything. Ask one short question only if a field is truly missing."
+                        )
+                    },
+                },
+            )
+
+        def record_tool_call_incomplete(record: dict, parse_result: ToolArgsParseResult):
+            if record.get("incomplete_recorded"):
+                return
+            record["incomplete_recorded"] = True
+            payload = tool_call_payload(record, parse_result)
+            log.warning(f"[{call_sid}] tool call incomplete: {payload}")
+            safe_record_call_event(call_sid, "tool_call_incomplete", payload)
+
+        async def process_submit_tool_call(record: dict, *, allow_output_item_fallback: bool, trigger: str):
+            if (record.get("name") or "") != "submit_service_request":
+                return False
+            if record.get("processed"):
+                safe_record_call_event(
+                    call_sid,
+                    "tool_call_duplicate_ignored",
+                    {**tool_call_payload(record), "trigger": trigger},
+                )
+                return False
+
+            parse_result = tool_call_args_for_processing(
+                record,
+                allow_output_item_fallback=allow_output_item_fallback,
+            )
+            if parse_result.state in {"waiting", "already_processed"}:
+                return False
+            if parse_result.state == "incomplete":
+                record_tool_call_incomplete(record, parse_result)
+                return False
+            if parse_result.state == "parse_failed":
+                if parse_result.source == "response.output_item.done" and trigger == "response.output_item.done":
+                    if not record.get("output_item_partial_recorded"):
+                        record["output_item_partial_recorded"] = True
+                        safe_record_call_event(
+                            call_sid,
+                            "tool_args_output_item_partial_ignored",
+                            {**tool_call_payload(record, parse_result), "trigger": trigger},
+                        )
+                    return False
+                await send_tool_args_failure(record, parse_result)
+                return False
+            if parse_result.state != "ready":
+                return False
+
+            record["processed"] = True
+            session = sessions.get(call_sid, {})
+            processed_tool_calls = session.setdefault("processed_tool_call_ids", set())
+            tool_call_key = record.get("call_id") or record.get("item_id") or record.get("response_id")
+            if tool_call_key and tool_call_key in processed_tool_calls:
+                safe_record_call_event(
+                    call_sid,
+                    "tool_call_duplicate_ignored",
+                    {**tool_call_payload(record, parse_result), "trigger": trigger},
+                )
+                return False
+            if tool_call_key:
+                processed_tool_calls.add(tool_call_key)
+
+            args = parse_result.args or {}
+            session["submit_service_request_seen"] = True
+            log.info(f"[{call_sid}] submit_service_request source={parse_result.source}: {args}")
+            intake_policy = session.get("intake_policy")
+            notification_policy = repository.get_notification_policy(session.get("tenant_id")) if session.get("tenant_id") else None
+            safe_record_call_event(
+                call_sid,
+                "submit_service_request_attempt",
+                {
+                    "args": args,
+                    "args_source": parse_result.source,
+                    "caller_spoke_since_initial_greeting": bool(
+                        session.get("caller_spoke_since_initial_greeting")
+                    ),
+                    "last_response_create_reason": session.get("last_response_create_reason"),
+                },
+            )
+
+            async def send_tenant_sms(send_call_sid: str, send_args: dict, send_from_number: str, send_to_number: str):
+                return await send_sms(
+                    send_call_sid,
+                    send_args,
+                    send_from_number,
+                    send_to_number,
+                    intake_policy,
+                    notification_policy,
+                )
+
+            result = await process_service_request(
+                call_sid,
+                args,
+                session.get("from_number", "unknown"),
+                session.get("notification_sms_number", ""),
+                send_tenant_sms,
+                caller_text=" ".join(session.get("caller_text_parts", [])),
+                tenant_id=session.get("tenant_id"),
+                intake_state=session.setdefault("intake_state", {}),
+            )
+            session["complete"] = result.should_hangup
+            session["last_service_request_result"] = result.output
+            if result.output.get("lead_id"):
+                session["lead_id"] = result.output.get("lead_id")
+            if result.should_hangup:
+                session["hangup_reason"] = result.output.get("reason") or "service_request_complete"
+
+            await oai_ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": record.get("call_id") or "",
+                    "output": build_service_request_output(result.output),
+                },
+            }))
+            if result.should_hangup:
+                session["pending_hangup"] = True
+                session["closing_response_started"] = False
+            response_create = {"type": "response.create"}
+            if result.closing_instructions:
+                response_create["response"] = {"instructions": result.closing_instructions}
+            await send_response_create(
+                response_create_reason_for_service_result(result.output, result.should_hangup),
+                response_create,
+            )
+            pending_question = session.setdefault("intake_state", {}).get("pending_extra_question") or {}
+            if result.output.get("reason") in {
+                "intake_policy_missing_extra_fields",
+                "intake_policy_unanswered_extra_field",
+            } and pending_question:
+                pending_question["asked"] = True
+                safe_record_call_event(
+                    call_sid,
+                    "intake_question_prompted",
+                    {"pending_extra_question": pending_question},
+                )
+            return True
+
+        async def process_waiting_tool_calls(trigger: str):
+            processed_any = False
+            for record in unique_tool_call_records(function_call_records):
+                processed_any = (
+                    await process_submit_tool_call(
+                        record,
+                        allow_output_item_fallback=True,
+                        trigger=trigger,
+                    )
+                    or processed_any
+                )
+            return processed_any
 
         try:
             async for raw in oai_ws:
@@ -778,7 +1226,6 @@ async def media_stream(ws: WebSocket):
                             )
                     caller_transcript = ""
 
-                # Function call — GA API delivers complete call in response.output_item.done
                 elif etype == "session.updated":
                     session = sessions.get(call_sid, {})
                     if not session.get("greeting_sent"):
@@ -788,6 +1235,7 @@ async def media_stream(ws: WebSocket):
                         log.info(f"[{call_sid}] Session updated, greeting sent")
 
                 elif etype == "input_audio_buffer.speech_started":
+                    caller_speaking = True
                     session = sessions.get(call_sid, {})
                     if call_sid and session.get("greeting_sent") and not session.get("first_caller_speech_started"):
                         session["first_caller_speech_started"] = True
@@ -814,8 +1262,22 @@ async def media_stream(ws: WebSocket):
                             "intake_question_caller_response_started",
                             {"pending_extra_question": pending_question},
                         )
-                    if assistant_speaking or asyncio.get_running_loop().time() < suppress_input_until:
-                        log.info(f"[{call_sid}] Ignoring speech_started during AI audio/suppress window")
+                    suppress_active = asyncio.get_running_loop().time() < suppress_input_until
+                    if assistant_speaking or suppress_active:
+                        payload = barge_in_event_payload(
+                            session,
+                            response_active=response_active,
+                            assistant_speaking=assistant_speaking,
+                            suppress_active=suppress_active,
+                        )
+                        log.info(f"[{call_sid}] Caller speech during AI audio/suppress window payload={payload}")
+                        safe_record_call_event(call_sid, "barge_in_detected", payload)
+                        if not session.get("complete") and response_active:
+                            try:
+                                await oai_ws.send(json.dumps({"type": "response.cancel"}))
+                            except Exception as exc:
+                                log.info(f"[{call_sid}] response.cancel ignored: {exc}")
+                            await clear_twilio_audio()
                     elif not session.get("complete") and response_active:
                         log.info(f"[{call_sid}] Caller speech started; canceling current AI audio")
                         try:
@@ -825,6 +1287,10 @@ async def media_stream(ws: WebSocket):
                         await clear_twilio_audio()
                     else:
                         log.info(f"[{call_sid}] Caller speech started")
+
+                elif etype == "input_audio_buffer.speech_stopped":
+                    caller_speaking = False
+                    await flush_pending_response_create("caller_speech_stopped")
 
                 elif etype == "response.created":
                     response_active = True
@@ -860,96 +1326,74 @@ async def media_stream(ws: WebSocket):
                             payload = hangup_scheduled_payload(session)
                             safe_record_call_event(call_sid, "hangup_schedule_blocked", payload)
                             log.error(f"[{call_sid}] Hangup schedule blocked by lifecycle guard: {payload}")
+                    await process_waiting_tool_calls("response.done")
+                    await flush_pending_response_create("response.done")
+
+                elif etype == "response.output_item.added":
+                    item = evt.get("item") or {}
+                    if item.get("type") == "function_call":
+                        register_function_call_output_item(function_call_records, evt)
+
+                elif etype == "response.function_call_arguments.delta":
+                    record = register_function_call_delta(function_call_records, evt)
+                    if evt.get("delta"):
+                        safe_record_call_event(
+                            call_sid,
+                            "function_args_delta",
+                            {
+                                "call_id": record.get("call_id"),
+                                "item_id": record.get("item_id"),
+                                "response_id": record.get("response_id"),
+                                "delta_length": len(evt.get("delta") or ""),
+                            },
+                        )
+
+                elif etype == "response.function_call_arguments.done":
+                    record = register_function_call_done(function_call_records, evt)
+                    safe_record_call_event(
+                        call_sid,
+                        "function_args_done",
+                        {
+                            "call_id": record.get("call_id"),
+                            "item_id": record.get("item_id"),
+                            "response_id": record.get("response_id"),
+                            "name": record.get("name"),
+                            "arguments_preview": _event_text(record.get("final_arguments"), TOOL_ARGS_PREVIEW_LIMIT),
+                            "incomplete": bool(record.get("incomplete")),
+                        },
+                    )
+                    await process_submit_tool_call(
+                        record,
+                        allow_output_item_fallback=False,
+                        trigger="function_call_arguments.done",
+                    )
 
                 elif etype == "response.output_item.done":
                     item = evt.get("item", {})
-                    if item.get("type") == "function_call" and item.get("name") == "submit_service_request":
-                        call_id = item.get("call_id", "")
-                        try:
-                            args = json.loads(item.get("arguments", "{}"))
-                        except json.JSONDecodeError:
-                            log.error(f"[{call_sid}] Bad function args: {item.get('arguments')!r}")
-                            args = {}
-
-                        session = sessions.get(call_sid, {})
-                        session["submit_service_request_seen"] = True
-                        log.info(f"[{call_sid}] submit_service_request: {args}")
-                        intake_policy = session.get("intake_policy")
-                        notification_policy = repository.get_notification_policy(session.get("tenant_id")) if session.get("tenant_id") else None
-                        safe_record_call_event(
-                            call_sid,
-                            "submit_service_request_attempt",
-                            {
-                                "args": args,
-                                "caller_spoke_since_initial_greeting": bool(
-                                    session.get("caller_spoke_since_initial_greeting")
-                                ),
-                                "last_response_create_reason": session.get("last_response_create_reason"),
-                            },
+                    if item.get("type") == "function_call":
+                        record = register_function_call_output_item(function_call_records, evt)
+                        await process_submit_tool_call(
+                            record,
+                            allow_output_item_fallback=True,
+                            trigger="response.output_item.done",
                         )
-
-                        async def send_tenant_sms(send_call_sid: str, send_args: dict, send_from_number: str, send_to_number: str):
-                            return await send_sms(
-                                send_call_sid,
-                                send_args,
-                                send_from_number,
-                                send_to_number,
-                                intake_policy,
-                                notification_policy,
-                            )
-
-                        result = await process_service_request(
-                            call_sid,
-                            args,
-                            session.get("from_number", "unknown"),
-                            session.get("notification_sms_number", ""),
-                            send_tenant_sms,
-                            caller_text=" ".join(session.get("caller_text_parts", [])),
-                            tenant_id=session.get("tenant_id"),
-                            intake_state=session.setdefault("intake_state", {}),
-                        )
-                        session["complete"] = result.should_hangup
-                        session["last_service_request_result"] = result.output
-                        if result.output.get("lead_id"):
-                            session["lead_id"] = result.output.get("lead_id")
-                        if result.should_hangup:
-                            session["hangup_reason"] = result.output.get("reason") or "service_request_complete"
-
-                        # Return result so AI delivers the closing line
-                        await oai_ws.send(json.dumps({
-                            "type": "conversation.item.create",
-                            "item": {
-                                "type":    "function_call_output",
-                                "call_id": call_id,
-                                "output":  build_service_request_output(result.output),
-                            },
-                        }))
-                        if result.should_hangup:
-                            session["pending_hangup"] = True
-                            session["closing_response_started"] = False
-                        response_create = {"type": "response.create"}
-                        if result.closing_instructions:
-                            response_create["response"] = {"instructions": result.closing_instructions}
-                        await send_response_create(
-                            response_create_reason_for_service_result(result.output, result.should_hangup),
-                            response_create,
-                        )
-                        pending_question = session.setdefault("intake_state", {}).get("pending_extra_question") or {}
-                        if result.output.get("reason") in {
-                            "intake_policy_missing_extra_fields",
-                            "intake_policy_unanswered_extra_field",
-                        } and pending_question:
-                            pending_question["asked"] = True
-                            safe_record_call_event(
-                                call_sid,
-                                "intake_question_prompted",
-                                {"pending_extra_question": pending_question},
-                            )
 
                 elif etype == "error":
                     err = evt.get("error") or {}
                     log.error(f"[{call_sid}] [OAI_IN] error: {err}")
                     safe_record_call_event(call_sid, "openai_realtime_error", {"error": err})
+                    if err.get("code") == "response_cancel_not_active":
+                        response_active = False
+                        assistant_speaking = False
+                        suppress_input_until = max(
+                            suppress_input_until,
+                            asyncio.get_running_loop().time() + 0.25,
+                        )
+                        safe_record_call_event(
+                            call_sid,
+                            "response_cancel_not_active_reconciled",
+                            {"response_active": response_active, "assistant_speaking": assistant_speaking},
+                        )
         except websockets.exceptions.ConnectionClosed as exc:
             if not lifecycle.get("closing_oai_from_media_finally"):
                 record_openai_websocket_closed(
@@ -1062,11 +1506,22 @@ async def media_stream(ws: WebSocket):
 
             elif evt == "media":
                 if oai_ws and not oai_ws.closed:
-                    if assistant_speaking or asyncio.get_running_loop().time() < suppress_input_until:
-                        continue
-
                     # Twilio mulaw 8kHz → pcm16 24kHz → OpenAI
                     mulaw = base64.b64decode(data["media"]["payload"])
+                    session = sessions.get(call_sid, {})
+                    if assistant_speaking or asyncio.get_running_loop().time() < suppress_input_until:
+                        session["caller_audio_overlap_frames"] = int(session.get("caller_audio_overlap_frames") or 0) + 1
+                        session["caller_audio_overlap_bytes"] = int(session.get("caller_audio_overlap_bytes") or 0) + len(mulaw)
+                        if session["caller_audio_overlap_frames"] == 1:
+                            safe_record_call_event(
+                                call_sid,
+                                "caller_audio_forwarded_during_assistant",
+                                {
+                                    "assistant_speaking": bool(assistant_speaking),
+                                    "suppress_active": asyncio.get_running_loop().time() < suppress_input_until,
+                                    "note": "Caller audio was forwarded to OpenAI instead of being dropped.",
+                                },
+                            )
                     pcm8k = audioop.ulaw2lin(mulaw, 2)
                     pcm24k, twilio_to_oai_state = audioop.ratecv(
                         pcm8k, 2, 1, 8000, 24000, twilio_to_oai_state
