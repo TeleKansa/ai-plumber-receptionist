@@ -65,6 +65,7 @@ def _tenant_actions_table(tenants: list[dict]) -> str:
             f"<td>{escape(str(tenant_id))}</td>"
             f"<td>{escape(tenant.get('slug') or '')}</td>"
             f"<td>{escape(tenant.get('status') or '')}</td>"
+            f"<td>{escape('yes' if tenant.get('is_demo') else 'no')}</td>"
             f"<td>{escape(tenant.get('business_name') or '')}</td>"
             f"<td>{escape(tenant.get('notification_sms_number') or '')}</td>"
             f'<td><a href="{detail_href}">Details</a></td>'
@@ -75,7 +76,7 @@ def _tenant_actions_table(tenants: list[dict]) -> str:
         )
     return (
         "<table><thead><tr>"
-        "<th>tenant</th><th>id</th><th>slug</th><th>status</th><th>business_name</th>"
+        "<th>tenant</th><th>id</th><th>slug</th><th>status</th><th>demo</th><th>business_name</th>"
         "<th>notification_sms_number</th><th>details</th><th>prompt</th><th>intake</th><th>notifications</th>"
         "</tr></thead><tbody>"
         f"{''.join(rows)}"
@@ -106,6 +107,14 @@ def _select(name: str, options: list[tuple[str, str]], selected: str = "") -> st
         selected_attr = " selected" if value == selected else ""
         option_html.append(f'<option value="{escape(value)}"{selected_attr}>{escape(label)}</option>')
     return f'<label>{escape(name)}<br><select name="{escape(name)}">{"".join(option_html)}</select></label>'
+
+
+def _demo_filter_select(selected: str = "all") -> str:
+    return _select(
+        "demo_filter",
+        [("all", "show all"), ("hide_demo", "hide demo"), ("demo", "demo only")],
+        selected or "all",
+    )
 
 
 def _realtime_model_select(selected: str = "", fallback_model: str = "gpt-realtime-1.5") -> str:
@@ -289,7 +298,7 @@ def _page(title: str, body: str, status_code: int = 200) -> HTMLResponse:
   </style>
 </head>
 <body>
-  <nav><a href="/admin/review">Review queue</a><a href="/admin/metrics">Metrics</a><a href="/admin/leads">Dashboard</a><a href="/admin/tenants">Tenants</a></nav>
+  <nav><a href="/admin/demo">Demo</a><a href="/admin/review">Review queue</a><a href="/admin/metrics">Metrics</a><a href="/admin/leads">Dashboard</a><a href="/admin/tenants">Tenants</a></nav>
   <h1>{escape(title)}</h1>
   {body}
 </body>
@@ -367,7 +376,7 @@ def _review_queue_table(rows: list[dict]) -> str:
         rendered.append(
             "<tr>"
             f"<td>{escape(str(row.get('started_at') or ''))}</td>"
-            f"<td>{escape(row.get('tenant_name') or '')}</td>"
+            f"<td>{escape(row.get('tenant_label') or row.get('tenant_name') or '')}</td>"
             f'<td><a href="/admin/calls/{escape(call_sid)}">{escape(call_sid)}</a></td>'
             f"<td>{escape(_mask_phone(row.get('from_number') or ''))}</td>"
             f"<td>{escape(row.get('status') or '')}</td>"
@@ -484,6 +493,57 @@ def _important_events(events: list[dict]) -> list[dict]:
     return [event for event in events if event.get("event_type") in important]
 
 
+def _readiness_table(items: list[dict]) -> str:
+    rows = []
+    for item in items:
+        rows.append(
+            "<tr>"
+            f"<td>{escape('PASS' if item.get('ok') else 'FAIL')}</td>"
+            f"<td>{escape(item.get('label') or '')}</td>"
+            f"<td>{escape(str(item.get('detail') or ''))}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr><th>status</th><th>check</th><th>detail</th></tr></thead><tbody>"
+        f"{''.join(rows)}"
+        "</tbody></table>"
+    )
+
+
+def _demo_scripts() -> str:
+    scripts = [
+        {
+            "title": "A. Normal leak",
+            "caller": "My kitchen sink has a slow drip. The address is 6100 West 120th Street in Overland Park. This number is good. My name is Sam. I'm renting. Nothing else.",
+            "expected": "NEW PLUMBING LEAD; priority normal or urgent; SMS sent; Homeowner or renter captured; Additional notes none or omitted.",
+        },
+        {
+            "title": "B. Emergency active leak",
+            "caller": "A pipe burst under the sink and water is still coming out. I can't shut it off. The address is 6100 West 120th Street in Overland Park. This number is good. My name is Sam. I'm renting. There's a dog in the backyard.",
+            "expected": "EMERGENCY PLUMBING LEAD; priority emergency; emergency reason visible; SMS sent to emergency recipient or fallback; Additional notes dog in backyard.",
+        },
+        {
+            "title": "C. One-shot info dump",
+            "caller": "Hi, my name is Sam. My kitchen sink is leaking underneath. Water is still coming out but I shut it off. The address is 6100 West 120th Street in Overland Park. This number is good. I'm renting. There's a dog in the backyard.",
+            "expected": "AI should not repeat known fields excessively; lead created; extra fields captured; SMS sent.",
+        },
+    ]
+    blocks = []
+    for script in scripts:
+        blocks.append(
+            "\n".join(
+                [
+                    f"<h3>{escape(script['title'])}</h3>",
+                    "<p><strong>Caller says:</strong></p>",
+                    f'<textarea readonly rows="4" style="width:100%; max-width:900px;">{escape(script["caller"])}</textarea>',
+                    "<p><strong>Expected:</strong></p>",
+                    f'<textarea readonly rows="3" style="width:100%; max-width:900px;">{escape(script["expected"])}</textarea>',
+                ]
+            )
+        )
+    return "\n".join(blocks)
+
+
 def create_admin_router(settings: Settings) -> APIRouter:
     router = APIRouter(dependencies=[Depends(_require_admin(settings))])
 
@@ -491,22 +551,105 @@ def create_admin_router(settings: Settings) -> APIRouter:
     async def admin_home():
         return await admin_leads()
 
-    @router.get("/admin/leads", response_class=HTMLResponse)
-    async def admin_leads():
-        calls = repository.list_recent_calls()
-        leads = repository.list_recent_leads()
-        notifications = repository.list_recent_notifications()
-        events = repository.list_recent_call_events()
+    @router.get("/admin/demo", response_class=HTMLResponse)
+    async def admin_demo():
+        readiness = repository.demo_readiness()
+        demo_tenant = readiness.get("tenant")
+        successful_leads = repository.list_demo_successful_leads()
+        calls_needing_review = repository.list_demo_calls_needing_review()
+        if demo_tenant:
+            tenant_id = demo_tenant["id"]
+            tenant_links = (
+                f'<p><strong>Demo tenant:</strong> <a href="/admin/tenants/{tenant_id}">{escape(demo_tenant["name"])}</a> '
+                f'| <a href="/admin/tenants/{tenant_id}/prompt">Prompt/persona</a> '
+                f'| <a href="/admin/tenants/{tenant_id}/intake-policy">Intake policy</a> '
+                f'| <a href="/admin/tenants/{tenant_id}/notification-policy">Notification policy</a></p>'
+            )
+        else:
+            tenant_links = "<p><strong>No demo tenant exists yet.</strong></p>"
+        fallback_rows = []
+        for lead in successful_leads:
+            fallback_rows.append(
+                {
+                    "created_at": lead.get("created_at"),
+                    "tenant": lead.get("tenant_name"),
+                    "call_sid": lead.get("call_sid"),
+                    "priority": lead.get("priority"),
+                    "notification_status": lead.get("notification_status"),
+                    "summary": lead.get("summary_text"),
+                }
+            )
         body = "\n".join(
             [
+                "<p>Use this page to run repeatable plumber demos without mixing them up with real pilot data.</p>",
+                tenant_links,
+                "<h2>Create or Ensure Demo Tenant</h2>",
+                '<form method="post" action="/admin/demo/ensure">',
+                _input("notification_sms_number", settings.plumber_phone_number, "+15551234567"),
+                "<br><br>",
+                _input("ai_ingress_twilio_number", "", "tenant-specific Twilio AI forwarding number"),
+                "<br><br>",
+                _textarea("allowed_test_callers", "", rows=3),
+                "<br><br>",
+                _select("status", [("testing", "testing"), ("live", "live")], "testing"),
+                "<br><br>",
+                "<button type=\"submit\">Create / Ensure Demo Tenant</button>",
+                "</form>",
+                "<h2>Demo Readiness Checklist</h2>",
+                _readiness_table(readiness.get("items") or []),
+                "<h2>Demo Scripts</h2>",
+                _demo_scripts(),
+                "<h2>What To Show After Each Call</h2>",
+                "<p>Open the newest call from the demo tenant, show the lead fields, priority, notification attempts, extra fields, and the copy-friendly PM summary.</p>",
+                "<h2>Fallback Demo Records</h2>",
+                "<p>If a live phone demo has trouble, use these recent successful demo records as a backup story.</p>",
+                _render_table(fallback_rows, ["created_at", "tenant", "call_sid", "priority", "notification_status", "summary"]),
+                "<h2>Demo Calls Needing Review</h2>",
+                _review_queue_table(calls_needing_review),
+                "<h2>Demo Cleanup</h2>",
+                "<p>This does not delete records. It marks demo leads as test records and hides demo calls from the default attention queue when they have no unresolved attention reason.</p>",
+                '<form method="post" action="/admin/demo/archive"><button type="submit">Mark demo records as test / archived</button></form>',
+                '<p><a href="/admin/review?demo_filter=demo">Review demo only</a> | <a href="/admin/review?demo_filter=hide_demo">Review non-demo only</a> | <a href="/admin/metrics?demo_filter=demo">Demo metrics</a></p>',
+            ]
+        )
+        return _page("Sales Demo Mode", body)
+
+    @router.post("/admin/demo/ensure")
+    async def admin_ensure_demo(request: Request):
+        form = await request.form()
+        tenant = repository.ensure_demo_tenant(
+            notification_sms_number=str(form.get("notification_sms_number", "")).strip() or settings.plumber_phone_number,
+            ai_ingress_twilio_number=str(form.get("ai_ingress_twilio_number", "")).strip(),
+            allowed_test_callers=_lines_to_list(str(form.get("allowed_test_callers", ""))),
+            status=str(form.get("status", "testing")).strip() or "testing",
+        )
+        return RedirectResponse(f"/admin/tenants/{tenant['id']}", status_code=303)
+
+    @router.post("/admin/demo/archive")
+    async def admin_archive_demo():
+        repository.archive_demo_records()
+        return RedirectResponse("/admin/demo", status_code=303)
+
+    @router.get("/admin/leads", response_class=HTMLResponse)
+    async def admin_leads(demo_filter: str = "all"):
+        calls = repository.list_recent_calls(demo_filter=demo_filter)
+        leads = repository.list_recent_leads(demo_filter=demo_filter)
+        notifications = repository.list_recent_notifications(demo_filter=demo_filter)
+        events = repository.list_recent_call_events(demo_filter=demo_filter)
+        body = "\n".join(
+            [
+                '<form method="get" action="/admin/leads">',
+                _demo_filter_select(demo_filter),
+                ' <button type="submit">Filter</button>',
+                "</form>",
                 "<h2>Recent Calls</h2>",
-                _render_table(calls, ["tenant_id", "prompt_version_id", "realtime_model", "realtime_reasoning_effort", "call_sid", "from_number", "to_number", "stream_sid", "status", "started_at", "ended_at"]),
+                _render_table(calls, ["tenant_id", "tenant_name", "tenant_is_demo", "prompt_version_id", "realtime_model", "realtime_reasoning_effort", "call_sid", "from_number", "to_number", "stream_sid", "status", "started_at", "ended_at"]),
                 "<h2>Recent Leads</h2>",
-                _render_table(leads, ["id", "tenant_id", "call_sid", "name", "callback", "address", "issue", "urgency", "priority", "priority_reason", "extra_fields", "status", "created_at"]),
+                _render_table(leads, ["id", "tenant_id", "tenant_name", "tenant_is_demo", "call_sid", "name", "callback", "address", "issue", "urgency", "priority", "priority_reason", "extra_fields", "lead_quality", "status", "created_at"]),
                 "<h2>Recent Notifications</h2>",
-                _render_table(notifications, ["id", "tenant_id", "lead_id", "channel", "to_number", "recipient_type", "status", "attempt_number", "provider_message_sid", "error", "created_at", "sent_at"]),
+                _render_table(notifications, ["id", "tenant_id", "tenant_name", "tenant_is_demo", "lead_id", "channel", "to_number", "recipient_type", "status", "attempt_number", "provider_message_sid", "error", "created_at", "sent_at"]),
                 "<h2>Recent Call Events</h2>",
-                _render_table(events, ["id", "tenant_id", "call_sid", "event_type", "payload_json", "created_at"]),
+                _render_table(events, ["id", "tenant_id", "tenant_is_demo", "call_sid", "event_type", "payload_json", "created_at"]),
             ]
         )
         return _page("Plumber Receptionist Admin", body)
@@ -520,6 +663,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
         notification_status: str = "",
         priority: str = "",
         realtime_model: str = "",
+        demo_filter: str = "all",
     ):
         tenants = repository.list_tenants()
         parsed_tenant_id = _parse_optional_int(tenant_id)
@@ -531,6 +675,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
             notification_status=notification_status,
             priority=priority,
             realtime_model=realtime_model,
+            demo_filter=demo_filter,
         )
         tenant_options = [("", "all tenants")] + [(str(tenant["id"]), tenant["name"]) for tenant in tenants]
         tag_options = [("", "any tag")] + [(tag_value, tag_value) for tag_value in sorted(repository.REVIEW_TAGS)]
@@ -551,6 +696,8 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 _select("priority", [("", "any priority"), ("normal", "normal"), ("urgent", "urgent"), ("emergency", "emergency")], priority),
                 " ",
                 _select("realtime_model", [("", "any model"), ("gpt-realtime-1.5", "gpt-realtime-1.5"), ("gpt-realtime-2", "gpt-realtime-2")], realtime_model),
+                " ",
+                _demo_filter_select(demo_filter),
                 ' <button type="submit">Filter</button>',
                 "</form>",
                 "<h2>Calls Needing Attention</h2>",
@@ -560,9 +707,9 @@ def create_admin_router(settings: Settings) -> APIRouter:
         return _page("Pilot Review Queue", body)
 
     @router.get("/admin/metrics", response_class=HTMLResponse)
-    async def admin_metrics(tenant_id: str = ""):
+    async def admin_metrics(tenant_id: str = "", demo_filter: str = "all"):
         parsed_tenant_id = _parse_optional_int(tenant_id)
-        metrics = repository.pilot_metrics(tenant_id=parsed_tenant_id)
+        metrics = repository.pilot_metrics(tenant_id=parsed_tenant_id, demo_filter=demo_filter)
         tenants = repository.list_tenants()
         tenant_options = [("", "all tenants")] + [(str(tenant["id"]), tenant["name"]) for tenant in tenants]
         summary_row = {key: value for key, value in metrics.items() if key != "by_tenant"}
@@ -570,12 +717,14 @@ def create_admin_router(settings: Settings) -> APIRouter:
             [
                 '<form method="get" action="/admin/metrics">',
                 _select("tenant_id", tenant_options, str(parsed_tenant_id or "")),
+                " ",
+                _demo_filter_select(demo_filter),
                 ' <button type="submit">Filter</button>',
                 "</form>",
                 "<h2>Pilot Metrics</h2>",
                 _render_table([summary_row], list(summary_row.keys())),
                 "<h2>By Tenant</h2>",
-                _render_table(metrics.get("by_tenant") or [], ["tenant_id", "tenant", "calls", "leads"]),
+                _render_table(metrics.get("by_tenant") or [], ["tenant_id", "tenant", "is_demo", "calls", "leads"]),
             ]
         )
         return _page("Pilot Metrics", body)
@@ -648,6 +797,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "name": tenant["name"],
                 "slug": tenant["slug"],
                 "status": tenant["status"],
+                "is_demo": tenant.get("is_demo"),
                 "business_name": tenant.get("business_name") or "",
                 "notification_sms_number": tenant.get("notification_sms_number") or "",
                 "backup_notification_sms_number": tenant.get("backup_notification_sms_number") or "",
@@ -661,12 +811,12 @@ def create_admin_router(settings: Settings) -> APIRouter:
         body = "\n".join(
             [
                 f"<h2>{escape(tenant['name'])}</h2>",
-                '<p><a href="/admin/tenants">Back to tenants</a></p>',
+                '<p><a href="/admin/tenants">Back to tenants</a> | <a href="/admin/demo">Demo</a></p>',
                 f'<p><strong><a href="/admin/tenants/{tenant_id}/prompt">Prompt/persona settings</a></strong> | <strong><a href="/admin/tenants/{tenant_id}/intake-policy">Intake policy</a></strong> | <strong><a href="/admin/tenants/{tenant_id}/notification-policy">Notification policy</a></strong></p>',
                 "<h3>Tenant Summary</h3>",
                 _render_table(
                     tenant_summary,
-                    ["id", "name", "slug", "status", "business_name", "notification_sms_number", "backup_notification_sms_number"],
+                    ["id", "name", "slug", "status", "is_demo", "business_name", "notification_sms_number", "backup_notification_sms_number"],
                 ),
                 "<h3>Onboarding / Telephony</h3>",
                 "<p>Customer keeps their Google Maps number. They forward missed/after-hours calls to this AI forwarding number. Live calls are blocked until Go Live is enabled and the phone live switch is on.</p>",
@@ -1276,7 +1426,7 @@ def create_admin_router(settings: Settings) -> APIRouter:
                 "<h2>Call Summary</h2>",
                 _render_table(
                     [call_summary] if call_summary else [],
-                    ["call_sid", "tenant_id", "prompt_version_id", "realtime_model", "realtime_reasoning_effort", "from_number", "to_number", "status", "started_at", "ended_at"],
+                    ["call_sid", "tenant_id", "tenant_name", "tenant_is_demo", "prompt_version_id", "realtime_model", "realtime_reasoning_effort", "from_number", "to_number", "status", "started_at", "ended_at"],
                 ),
                 f'<p><a href="/admin/review">Back to review queue</a> | <a href="/admin/leads">Back to dashboard</a></p>',
                 "<h2>Copy-Friendly PM Summary</h2>",

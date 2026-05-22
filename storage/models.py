@@ -143,6 +143,7 @@ class Tenant(Base):
     name = Column(String(255), nullable=False)
     slug = Column(String(128), unique=True, nullable=False, index=True)
     status = Column(String(64), nullable=False, default="onboarding")
+    is_demo = Column(Boolean, nullable=False, default=False)
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
 

@@ -75,6 +75,11 @@ def add_missing_tenant_columns(engine):
             conn.execute(text("ALTER TABLE calls ADD COLUMN realtime_model VARCHAR(128)"))
         if call_columns and "realtime_reasoning_effort" not in call_columns:
             conn.execute(text("ALTER TABLE calls ADD COLUMN realtime_reasoning_effort VARCHAR(32)"))
+        tenant_columns = _columns_for(engine, "tenants")
+        if tenant_columns and "is_demo" not in tenant_columns:
+            conn.execute(text("ALTER TABLE tenants ADD COLUMN is_demo BOOLEAN DEFAULT FALSE"))
+        if "is_demo" in _columns_for(engine, "tenants"):
+            conn.execute(text("UPDATE tenants SET is_demo = FALSE WHERE is_demo IS NULL"))
         prompt_profile_columns = _columns_for(engine, "tenant_ai_profiles")
         if prompt_profile_columns and "realtime_model" not in prompt_profile_columns:
             conn.execute(text("ALTER TABLE tenant_ai_profiles ADD COLUMN realtime_model VARCHAR(128)"))
@@ -120,10 +125,10 @@ def ensure_default_tenant(engine, settings):
         if tenant_id is None:
             conn.execute(
                 text(
-                    "INSERT INTO tenants (name, slug, status, created_at, updated_at) "
-                    "VALUES (:name, :slug, 'live', :created_at, :updated_at)"
+                    "INSERT INTO tenants (name, slug, status, is_demo, created_at, updated_at) "
+                    "VALUES (:name, :slug, 'live', :is_demo, :created_at, :updated_at)"
                 ),
-                {"name": name, "slug": slug, "created_at": now, "updated_at": now},
+                {"name": name, "slug": slug, "is_demo": False, "created_at": now, "updated_at": now},
             )
             tenant_id = _scalar(conn, "SELECT id FROM tenants WHERE slug = :slug", {"slug": slug})
         else:

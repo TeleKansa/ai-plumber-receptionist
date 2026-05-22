@@ -99,6 +99,28 @@ ACTION_NEEDED_VALUES = {
     "follow_up_with_customer",
 }
 
+DEMO_TENANT_SLUG = "demo-plumbing"
+DEMO_PROPERTY_ROLE_QUESTION = {
+    "key": "property_role",
+    "label": "Homeowner or renter",
+    "question_text": "Are you the homeowner or are you renting?",
+    "collection_mode": "ask_once",
+    "required": False,
+    "include_in_sms": True,
+    "include_in_admin": True,
+    "active": True,
+}
+DEMO_ADDITIONAL_NOTES_QUESTION = {
+    "key": "additional_notes",
+    "label": "Additional notes",
+    "question_text": "Anything else we should know before I send this over?",
+    "collection_mode": "ask_once",
+    "required": False,
+    "include_in_sms": True,
+    "include_in_admin": True,
+    "active": True,
+}
+
 
 def _normalize_phone(value: Optional[str]) -> str:
     return normalize_phone_number(value)
@@ -111,6 +133,7 @@ def _tenant_summary(tenant: Tenant) -> dict:
         "name": tenant.name,
         "slug": tenant.slug,
         "status": tenant.status,
+        "is_demo": bool(tenant.is_demo),
         "created_at": tenant.created_at,
         "updated_at": tenant.updated_at,
         "business_name": settings.business_name if settings else tenant.name,
@@ -275,6 +298,8 @@ def _call_summary(call: Call) -> dict:
         "review_status": review["review_status"],
         "review_tags": review["review_tags"],
         "review_tags_json": review["review_tags_json"],
+        "tenant_name": call.tenant.name if call.tenant else "",
+        "tenant_is_demo": bool(call.tenant.is_demo) if call.tenant else False,
     }
 
 
@@ -303,6 +328,8 @@ def _lead_summary(lead: Lead) -> dict:
         "lead_notes": lead.lead_notes or "",
         "status": lead.status,
         "created_at": lead.created_at,
+        "tenant_name": lead.tenant.name if lead.tenant else "",
+        "tenant_is_demo": bool(lead.tenant.is_demo) if lead.tenant else False,
     }
 
 
@@ -321,6 +348,8 @@ def _notification_summary(notification: Notification) -> dict:
         "attempt_number": notification.attempt_number,
         "created_at": notification.created_at,
         "sent_at": notification.sent_at,
+        "tenant_name": notification.tenant.name if notification.tenant else "",
+        "tenant_is_demo": bool(notification.tenant.is_demo) if notification.tenant else False,
     }
 
 
@@ -333,11 +362,22 @@ def _event_summary(event: CallEvent) -> dict:
         "event_type": event.event_type,
         "payload_json": event.payload_json,
         "created_at": event.created_at,
+        "tenant_is_demo": bool(event.tenant.is_demo) if event.tenant else False,
     }
 
 
 def _get_call(db, call_sid: str) -> Optional[Call]:
     return db.query(Call).filter(Call.call_sid == call_sid).one_or_none()
+
+
+def _apply_demo_filter(query, model, demo_filter: str):
+    value = (demo_filter or "all").strip().lower()
+    if value not in {"demo", "hide_demo"}:
+        return query
+    query = query.join(Tenant, model.tenant_id == Tenant.id)
+    if value == "demo":
+        return query.filter(Tenant.is_demo.is_(True))
+    return query.filter(Tenant.is_demo.is_(False))
 
 
 def _default_tenant(db) -> Tenant:
@@ -804,9 +844,18 @@ def get_call_tenant(call_sid: str) -> Optional[dict]:
         return None
 
 
-def create_tenant(name: str, slug: str, business_name: str, greeting: str, notification_sms_number: str, backup_notification_sms_number: str = "", status: str = "onboarding") -> dict:
+def create_tenant(
+    name: str,
+    slug: str,
+    business_name: str,
+    greeting: str,
+    notification_sms_number: str,
+    backup_notification_sms_number: str = "",
+    status: str = "onboarding",
+    is_demo: bool = False,
+) -> dict:
     with session_scope() as db:
-        tenant = Tenant(name=name.strip(), slug=slug.strip(), status=status or "onboarding")
+        tenant = Tenant(name=name.strip(), slug=slug.strip(), status=status or "onboarding", is_demo=bool(is_demo))
         db.add(tenant)
         db.flush()
         settings = TenantSettings(
@@ -823,6 +872,221 @@ def create_tenant(name: str, slug: str, business_name: str, greeting: str, notif
         _create_default_intake_policy(db, tenant)
         _create_default_notification_policy(db, tenant)
         _create_default_prompt_profile(db, tenant)
+        return _tenant_summary(tenant)
+
+
+def _load_json_list(value: Optional[str]) -> list:
+    if not value:
+        return []
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return []
+    return parsed if isinstance(parsed, list) else []
+
+
+def _upsert_demo_question(questions: list[dict], default_question: dict) -> list[dict]:
+    key = default_question["key"]
+    updated = []
+    found = False
+    for question in questions:
+        if not isinstance(question, dict):
+            continue
+        if question.get("key") == key:
+            merged = {**default_question, **question}
+            if key == "property_role" and str(merged.get("label", "")).strip().lower().startswith("homowner"):
+                merged["label"] = "Homeowner or renter"
+            updated.append(merged)
+            found = True
+        else:
+            updated.append(question)
+    if not found:
+        updated.append(dict(default_question))
+    return updated
+
+
+def _ensure_demo_intake_policy(db, tenant: Tenant) -> TenantIntakePolicy:
+    policy = _get_or_create_intake_policy(db, tenant)
+    extra_questions = _load_json_list(policy.extra_questions_json)
+    extra_questions = _upsert_demo_question(extra_questions, DEMO_PROPERTY_ROLE_QUESTION)
+    extra_questions = _upsert_demo_question(extra_questions, DEMO_ADDITIONAL_NOTES_QUESTION)
+    policy.enabled = True
+    policy.extra_questions_json = json.dumps(extra_questions)
+    policy.updated_at = utcnow()
+    return policy
+
+
+def _ensure_demo_notification_policy(db, tenant: Tenant, notification_sms_number: str) -> TenantNotificationPolicy:
+    policy = _get_or_create_notification_policy(db, tenant)
+    normal_recipients = _json_text_list(policy.normal_sms_recipients_json)
+    if notification_sms_number and notification_sms_number not in normal_recipients:
+        normal_recipients = [notification_sms_number]
+    policy.normal_sms_recipients_json = json.dumps(normal_recipients)
+    policy.send_normal_leads = True
+    policy.send_emergency_leads = True
+    policy.include_extra_fields = True
+    policy.include_additional_notes = True
+    if not _json_text_list(policy.emergency_keywords_json):
+        policy.emergency_keywords_json = json.dumps([
+            "active leak",
+            "burst pipe",
+            "cannot shut",
+            "can't shut",
+            "cant shut",
+            "flooding",
+            "sewage",
+            "sewer backup",
+            "water is still coming out",
+            "water still coming out",
+            "water still running",
+        ])
+    policy.updated_at = utcnow()
+    return policy
+
+
+def _create_demo_prompt_profile(db, tenant: Tenant, activate: bool = True) -> TenantAIProfile:
+    max_version = (
+        db.query(TenantAIProfile.version)
+        .filter(TenantAIProfile.tenant_id == tenant.id)
+        .order_by(desc(TenantAIProfile.version))
+        .first()
+    )
+    next_version = (max_version[0] if max_version else 0) + 1
+    if activate:
+        db.query(TenantAIProfile).filter(TenantAIProfile.tenant_id == tenant.id).update({"is_active": False})
+    profile = TenantAIProfile(
+        tenant_id=tenant.id,
+        version=next_version,
+        label="Sales demo prompt",
+        business_name="Demo Plumbing",
+        greeting="Demo Plumbing, what's going on?",
+        tone="calm, practical, confident, and natural for a plumbing office demo",
+        verbosity="brief; ask one thing, then stop; use details the caller already gave",
+        closing_line="Okay, you're all set. We'll call you back soon.",
+        avoid_phrases_json=json.dumps([
+            "I need to know",
+            "you need to tell me",
+            "certainly",
+            "I'd be happy to help",
+        ]),
+        preferred_terms_json=json.dumps(["service address", "callback number", "plumbing issue"]),
+        extra_instructions_text=(
+            "This tenant is used for live sales demos. Keep the call natural and concise. "
+            "If the caller gives all details at once, extract them and avoid re-asking known fields."
+        ),
+        realtime_model=None,
+        is_active=activate,
+    )
+    db.add(profile)
+    db.flush()
+    return profile
+
+
+def _get_or_create_demo_prompt(db, tenant: Tenant) -> TenantAIProfile:
+    profile = (
+        db.query(TenantAIProfile)
+        .filter(TenantAIProfile.tenant_id == tenant.id, TenantAIProfile.is_active.is_(True))
+        .order_by(desc(TenantAIProfile.version))
+        .first()
+    )
+    if profile is None:
+        return _create_demo_prompt_profile(db, tenant)
+    return profile
+
+
+def get_demo_tenant() -> Optional[dict]:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.slug == DEMO_TENANT_SLUG).one_or_none()
+        if tenant is None:
+            tenant = db.query(Tenant).filter(Tenant.is_demo.is_(True)).order_by(Tenant.id).first()
+        return _tenant_summary(tenant) if tenant else None
+
+
+def ensure_demo_tenant(
+    notification_sms_number: str = "",
+    ai_ingress_twilio_number: str = "",
+    allowed_test_callers: Optional[list[str]] = None,
+    status: str = "testing",
+) -> dict:
+    with session_scope() as db:
+        tenant = db.query(Tenant).filter(Tenant.slug == DEMO_TENANT_SLUG).one_or_none()
+        if tenant is None:
+            tenant = db.query(Tenant).filter(Tenant.is_demo.is_(True)).order_by(Tenant.id).first()
+        if tenant is None:
+            tenant = Tenant(name="Demo Plumbing", slug=DEMO_TENANT_SLUG, status=status or "testing", is_demo=True)
+            db.add(tenant)
+            db.flush()
+            settings = TenantSettings(
+                tenant_id=tenant.id,
+                business_name="Demo Plumbing",
+                greeting="Demo Plumbing, what's going on?",
+                notification_sms_number=(notification_sms_number or "").strip(),
+                backup_notification_sms_number=None,
+                active=True,
+            )
+            db.add(settings)
+            db.flush()
+            _create_default_telephony_profile(db, tenant)
+            _ensure_demo_intake_policy(db, tenant)
+            _ensure_demo_notification_policy(db, tenant, (notification_sms_number or "").strip())
+            _create_demo_prompt_profile(db, tenant)
+        else:
+            tenant.is_demo = True
+            tenant.status = (status or tenant.status or "testing").strip()
+            tenant.updated_at = utcnow()
+            if tenant.settings is None:
+                db.add(
+                    TenantSettings(
+                        tenant_id=tenant.id,
+                        business_name="Demo Plumbing",
+                        greeting="Demo Plumbing, what's going on?",
+                        notification_sms_number=(notification_sms_number or "").strip(),
+                        active=True,
+                    )
+                )
+                db.flush()
+            elif notification_sms_number:
+                tenant.settings.notification_sms_number = notification_sms_number.strip()
+                tenant.settings.active = tenant.status not in {"paused", "archived"}
+            _ensure_demo_intake_policy(db, tenant)
+            _ensure_demo_notification_policy(db, tenant, (notification_sms_number or "").strip())
+            _get_or_create_demo_prompt(db, tenant)
+
+        profile = _get_or_create_telephony_profile(db, tenant)
+        if ai_ingress_twilio_number:
+            profile.ai_ingress_twilio_number = ai_ingress_twilio_number.strip()
+            existing_phone = (
+                db.query(TenantPhoneNumber)
+                .filter(TenantPhoneNumber.twilio_number == ai_ingress_twilio_number.strip())
+                .one_or_none()
+            )
+            if existing_phone is None:
+                db.add(
+                    TenantPhoneNumber(
+                        tenant_id=tenant.id,
+                        twilio_number=ai_ingress_twilio_number.strip(),
+                        label="Demo AI forwarding number",
+                        active=True,
+                        accepts_live_calls=tenant.status == "live",
+                        purpose="ai_forwarding",
+                    )
+                )
+            else:
+                existing_phone.tenant_id = tenant.id
+                existing_phone.label = existing_phone.label or "Demo AI forwarding number"
+                existing_phone.active = True
+                existing_phone.accepts_live_calls = tenant.status == "live"
+                existing_phone.purpose = existing_phone.purpose or "ai_forwarding"
+        if tenant.status == "live":
+            db.query(TenantPhoneNumber).filter(TenantPhoneNumber.tenant_id == tenant.id).update({"accepts_live_calls": True})
+        elif tenant.status == "testing":
+            db.query(TenantPhoneNumber).filter(TenantPhoneNumber.tenant_id == tenant.id).update({"accepts_live_calls": False})
+        profile.test_mode_enabled = tenant.status == "testing"
+        if allowed_test_callers is not None:
+            profile.allowed_test_callers_json = json.dumps([caller for caller in allowed_test_callers if caller])
+        if profile.forwarding_setup_status in {"", None, "not_started"} and ai_ingress_twilio_number:
+            profile.forwarding_setup_status = "customer_configured"
+        db.flush()
         return _tenant_summary(tenant)
 
 
@@ -1280,29 +1544,32 @@ def mark_notification_failed(notification_id: int, error: str) -> dict:
         return _notification_summary(notification)
 
 
-def list_recent_calls(limit: int = 25, tenant_id: Optional[int] = None) -> list[dict]:
+def list_recent_calls(limit: int = 25, tenant_id: Optional[int] = None, demo_filter: str = "all") -> list[dict]:
     with session_scope() as db:
         query = db.query(Call)
         if tenant_id is not None:
             query = query.filter(Call.tenant_id == tenant_id)
+        query = _apply_demo_filter(query, Call, demo_filter)
         calls = query.order_by(desc(Call.started_at)).limit(limit).all()
         return [_call_summary(call) for call in calls]
 
 
-def list_recent_leads(limit: int = 25, tenant_id: Optional[int] = None) -> list[dict]:
+def list_recent_leads(limit: int = 25, tenant_id: Optional[int] = None, demo_filter: str = "all") -> list[dict]:
     with session_scope() as db:
         query = db.query(Lead)
         if tenant_id is not None:
             query = query.filter(Lead.tenant_id == tenant_id)
+        query = _apply_demo_filter(query, Lead, demo_filter)
         leads = query.order_by(desc(Lead.created_at)).limit(limit).all()
         return [_lead_summary(lead) for lead in leads]
 
 
-def list_recent_notifications(limit: int = 25, tenant_id: Optional[int] = None) -> list[dict]:
+def list_recent_notifications(limit: int = 25, tenant_id: Optional[int] = None, demo_filter: str = "all") -> list[dict]:
     with session_scope() as db:
         query = db.query(Notification)
         if tenant_id is not None:
             query = query.filter(Notification.tenant_id == tenant_id)
+        query = _apply_demo_filter(query, Notification, demo_filter)
         notifications = query.order_by(desc(Notification.created_at)).limit(limit).all()
         return [_notification_summary(notification) for notification in notifications]
 
@@ -1316,11 +1583,12 @@ def list_failed_notifications(limit: int = 25, tenant_id: Optional[int] = None) 
         return [_notification_summary(notification) for notification in notifications]
 
 
-def list_recent_call_events(limit: int = 50, tenant_id: Optional[int] = None) -> list[dict]:
+def list_recent_call_events(limit: int = 50, tenant_id: Optional[int] = None, demo_filter: str = "all") -> list[dict]:
     with session_scope() as db:
         query = db.query(CallEvent)
         if tenant_id is not None:
             query = query.filter(CallEvent.tenant_id == tenant_id)
+        query = _apply_demo_filter(query, CallEvent, demo_filter)
         events = query.order_by(desc(CallEvent.created_at)).limit(limit).all()
         return [_event_summary(event) for event in events]
 
@@ -1372,6 +1640,8 @@ def _review_queue_row(call: Call, leads: list[Lead], notifications: list[Notific
     return {
         **_call_summary(call),
         "tenant_name": tenant_name,
+        "tenant_is_demo": bool(call.tenant.is_demo) if call.tenant else False,
+        "tenant_label": f"{tenant_name} (demo)" if call.tenant and call.tenant.is_demo else tenant_name,
         "lead_created": "yes" if lead else "no",
         "lead_id": lead.id if lead else None,
         "priority": lead.priority if lead else "",
@@ -1394,6 +1664,7 @@ def list_call_review_queue(
     notification_status: str = "",
     priority: str = "",
     realtime_model: str = "",
+    demo_filter: str = "all",
 ) -> list[dict]:
     with session_scope() as db:
         query = db.query(Call)
@@ -1401,6 +1672,7 @@ def list_call_review_queue(
             query = query.filter(Call.tenant_id == tenant_id)
         if realtime_model:
             query = query.filter(Call.realtime_model == realtime_model)
+        query = _apply_demo_filter(query, Call, demo_filter)
         calls = query.order_by(desc(Call.started_at)).limit(limit).all()
         rows = []
         for call in calls:
@@ -1437,7 +1709,7 @@ def list_call_review_queue(
         return rows
 
 
-def pilot_metrics(tenant_id: Optional[int] = None) -> dict:
+def pilot_metrics(tenant_id: Optional[int] = None, demo_filter: str = "all") -> dict:
     with session_scope() as db:
         calls_query = db.query(Call)
         leads_query = db.query(Lead)
@@ -1446,21 +1718,31 @@ def pilot_metrics(tenant_id: Optional[int] = None) -> dict:
             calls_query = calls_query.filter(Call.tenant_id == tenant_id)
             leads_query = leads_query.filter(Lead.tenant_id == tenant_id)
             notifications_query = notifications_query.filter(Notification.tenant_id == tenant_id)
+        calls_query = _apply_demo_filter(calls_query, Call, demo_filter)
+        leads_query = _apply_demo_filter(leads_query, Lead, demo_filter)
+        notifications_query = _apply_demo_filter(notifications_query, Notification, demo_filter)
         total_calls = calls_query.count()
         total_leads = leads_query.count()
         notification_rows = notifications_query.all()
         review_rows = db.query(CallReview)
         if tenant_id is not None:
             review_rows = review_rows.filter(CallReview.tenant_id == tenant_id)
+        review_rows = _apply_demo_filter(review_rows, CallReview, demo_filter)
         reviews = review_rows.all()
         by_tenant = []
-        tenants = db.query(Tenant).order_by(Tenant.id).all()
+        tenants_query = db.query(Tenant)
+        if demo_filter == "demo":
+            tenants_query = tenants_query.filter(Tenant.is_demo.is_(True))
+        elif demo_filter == "hide_demo":
+            tenants_query = tenants_query.filter(Tenant.is_demo.is_(False))
+        tenants = tenants_query.order_by(Tenant.id).all()
         for tenant in tenants:
             tenant_calls = db.query(Call).filter(Call.tenant_id == tenant.id).count()
             tenant_leads = db.query(Lead).filter(Lead.tenant_id == tenant.id).count()
             by_tenant.append({
                 "tenant_id": tenant.id,
                 "tenant": tenant.name,
+                "is_demo": bool(tenant.is_demo),
                 "calls": tenant_calls,
                 "leads": tenant_leads,
             })
@@ -1543,6 +1825,106 @@ def build_call_summary_text(detail: dict) -> str:
     if review.get("internal_notes"):
         lines.append(f"Internal notes: {review.get('internal_notes')}")
     return "\n".join(lines)
+
+
+def demo_readiness() -> dict:
+    tenant = get_demo_tenant()
+    if not tenant:
+        return {
+            "tenant": None,
+            "items": [
+                {"label": "Demo tenant exists", "ok": False, "detail": "Create the demo tenant first."},
+            ],
+            "ready": False,
+        }
+    tenant_id = tenant["id"]
+    phones = list_tenant_phone_numbers(tenant_id)
+    telephony_profile = get_telephony_profile(tenant_id) or {}
+    prompt_profile = get_active_prompt_profile(tenant_id)
+    intake_policy = get_intake_policy(tenant_id)
+    notification_policy = get_notification_policy(tenant_id)
+    normal_recipients = _json_text_list(notification_policy.get("normal_sms_recipients_json") if notification_policy else "")
+    emergency_recipients = _json_text_list(notification_policy.get("emergency_sms_recipients_json") if notification_policy else "")
+    recent_successful = list_demo_successful_leads(limit=1)
+    items = [
+        {"label": "Demo tenant exists", "ok": True, "detail": tenant["name"]},
+        {"label": "Demo tenant has phone number", "ok": bool(phones), "detail": ", ".join(phone["twilio_number"] for phone in phones) or "No demo Twilio number yet."},
+        {"label": "Demo tenant is testing/live", "ok": tenant["status"] in {"testing", "live"}, "detail": tenant["status"]},
+        {"label": "Demo tenant has notification recipient", "ok": bool(normal_recipients), "detail": ", ".join(normal_recipients) or "No normal SMS recipient."},
+        {"label": "Demo tenant has active prompt version", "ok": bool(prompt_profile), "detail": str(prompt_profile.get("id")) if prompt_profile else "No active prompt."},
+        {"label": "Demo tenant has intake policy", "ok": bool(intake_policy and intake_policy.get("enabled")), "detail": "Enabled" if intake_policy and intake_policy.get("enabled") else "Missing or disabled."},
+        {"label": "Demo tenant has notification policy", "ok": bool(notification_policy), "detail": "Configured" if notification_policy else "Missing."},
+        {"label": "Emergency recipient or fallback", "ok": bool(emergency_recipients or normal_recipients), "detail": "Emergency recipient configured" if emergency_recipients else ("Fallback to normal recipient" if normal_recipients else "No emergency or fallback recipient.")},
+        {"label": "Current realtime model shown", "ok": bool(prompt_profile is not None), "detail": (prompt_profile.get("realtime_model") if prompt_profile and prompt_profile.get("realtime_model") else "env/default") if prompt_profile else ""},
+        {"label": "Last successful demo call", "ok": bool(recent_successful), "detail": recent_successful[0]["call_sid"] if recent_successful else "No successful demo lead yet."},
+    ]
+    return {
+        "tenant": tenant,
+        "phones": phones,
+        "telephony_profile": telephony_profile,
+        "prompt_profile": prompt_profile,
+        "intake_policy": intake_policy,
+        "notification_policy": notification_policy,
+        "items": items,
+        "ready": all(item["ok"] for item in items[:8]),
+    }
+
+
+def list_demo_successful_leads(limit: int = 5) -> list[dict]:
+    with session_scope() as db:
+        leads = (
+            db.query(Lead)
+            .join(Tenant, Lead.tenant_id == Tenant.id)
+            .filter(Tenant.is_demo.is_(True))
+            .order_by(desc(Lead.created_at))
+            .limit(limit * 3)
+            .all()
+        )
+        rows = []
+        for lead in leads:
+            notifications = db.query(Notification).filter(Notification.lead_id == lead.id).all()
+            if notifications and not any(notification.status == "sent" for notification in notifications):
+                continue
+            detail = get_call_detail(lead.call_sid)
+            rows.append({
+                **_lead_summary(lead),
+                "notification_status": _notification_status_for(notifications),
+                "summary_text": detail.get("summary_text") or "",
+            })
+            if len(rows) >= limit:
+                break
+        return rows
+
+
+def list_demo_calls_needing_review(limit: int = 5) -> list[dict]:
+    return list_call_review_queue(limit=limit, demo_filter="demo")
+
+
+def archive_demo_records() -> dict:
+    with session_scope() as db:
+        demo_tenants = db.query(Tenant).filter(Tenant.is_demo.is_(True)).all()
+        demo_tenant_ids = [tenant.id for tenant in demo_tenants]
+        if not demo_tenant_ids:
+            return {"calls_marked": 0, "leads_marked": 0}
+        leads = db.query(Lead).filter(Lead.tenant_id.in_(demo_tenant_ids)).all()
+        for lead in leads:
+            lead.lead_quality = "test"
+            if "demo archive" not in (lead.lead_notes or "").lower():
+                lead.lead_notes = ((lead.lead_notes or "").strip() + "\nDemo archive/test record.").strip()
+        calls = db.query(Call).filter(Call.tenant_id.in_(demo_tenant_ids)).all()
+        for call in calls:
+            review = db.query(CallReview).filter(CallReview.call_sid == call.call_sid).one_or_none()
+            if review is None:
+                review = CallReview(tenant_id=call.tenant_id, call_id=call.id, call_sid=call.call_sid)
+                db.add(review)
+            review.review_status = "good"
+            review.review_tags_json = json.dumps(["good_call", "other"])
+            review.internal_notes = ((review.internal_notes or "").strip() + "\nArchived demo/test record.").strip()
+            review.reviewed_by = "admin"
+            review.reviewed_at = utcnow()
+            review.updated_at = utcnow()
+        db.flush()
+        return {"calls_marked": len(calls), "leads_marked": len(leads)}
 
 
 def get_call_detail(call_sid: str) -> dict:
