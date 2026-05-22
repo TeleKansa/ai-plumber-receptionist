@@ -1,8 +1,11 @@
 import json
+import logging
 from datetime import datetime, timezone
 
 from sqlalchemy import inspect, text
 
+
+log = logging.getLogger("plumber_receptionist")
 
 TENANT_SCOPED_TABLES = ("calls", "leads", "notifications", "call_events")
 DEFAULT_ROUTING_MODE = "forwarded_google_maps_number"
@@ -55,59 +58,78 @@ def _normalize_phone(value: str) -> str:
     return digits
 
 
-def _columns_for(engine, table_name: str) -> set[str]:
-    inspector = inspect(engine)
+def _columns_for(bind, table_name: str) -> set[str]:
+    inspector = inspect(bind)
     if table_name not in inspector.get_table_names():
         return set()
     return {column["name"] for column in inspector.get_columns(table_name)}
 
 
 def add_missing_tenant_columns(engine):
+    log.info("DB migration step starting: add_missing_tenant_columns")
     with engine.begin() as conn:
         for table_name in TENANT_SCOPED_TABLES:
-            columns = _columns_for(engine, table_name)
+            columns = _columns_for(conn, table_name)
             if columns and "tenant_id" not in columns:
+                log.info("Adding tenant_id column to %s", table_name)
                 conn.execute(text(f"ALTER TABLE {table_name} ADD COLUMN tenant_id INTEGER"))
-        call_columns = _columns_for(engine, "calls")
+        call_columns = _columns_for(conn, "calls")
         if call_columns and "prompt_version_id" not in call_columns:
+            log.info("Adding prompt_version_id column to calls")
             conn.execute(text("ALTER TABLE calls ADD COLUMN prompt_version_id INTEGER"))
         if call_columns and "realtime_model" not in call_columns:
+            log.info("Adding realtime_model column to calls")
             conn.execute(text("ALTER TABLE calls ADD COLUMN realtime_model VARCHAR(128)"))
         if call_columns and "realtime_reasoning_effort" not in call_columns:
+            log.info("Adding realtime_reasoning_effort column to calls")
             conn.execute(text("ALTER TABLE calls ADD COLUMN realtime_reasoning_effort VARCHAR(32)"))
-        tenant_columns = _columns_for(engine, "tenants")
+        tenant_columns = _columns_for(conn, "tenants")
         if tenant_columns and "is_demo" not in tenant_columns:
+            log.info("Adding is_demo column to tenants")
             conn.execute(text("ALTER TABLE tenants ADD COLUMN is_demo BOOLEAN DEFAULT FALSE"))
-        if "is_demo" in _columns_for(engine, "tenants"):
+        if tenant_columns:
             conn.execute(text("UPDATE tenants SET is_demo = FALSE WHERE is_demo IS NULL"))
-        prompt_profile_columns = _columns_for(engine, "tenant_ai_profiles")
+        prompt_profile_columns = _columns_for(conn, "tenant_ai_profiles")
         if prompt_profile_columns and "realtime_model" not in prompt_profile_columns:
+            log.info("Adding realtime_model column to tenant_ai_profiles")
             conn.execute(text("ALTER TABLE tenant_ai_profiles ADD COLUMN realtime_model VARCHAR(128)"))
-        phone_columns = _columns_for(engine, "tenant_phone_numbers")
+        phone_columns = _columns_for(conn, "tenant_phone_numbers")
         if phone_columns and "accepts_live_calls" not in phone_columns:
+            log.info("Adding accepts_live_calls column to tenant_phone_numbers")
             conn.execute(text("ALTER TABLE tenant_phone_numbers ADD COLUMN accepts_live_calls BOOLEAN DEFAULT FALSE"))
         if phone_columns and "purpose" not in phone_columns:
+            log.info("Adding purpose column to tenant_phone_numbers")
             conn.execute(text("ALTER TABLE tenant_phone_numbers ADD COLUMN purpose VARCHAR(64)"))
-        lead_columns = _columns_for(engine, "leads")
+        lead_columns = _columns_for(conn, "leads")
         if lead_columns and "extra_fields_json" not in lead_columns:
+            log.info("Adding extra_fields_json column to leads")
             conn.execute(text("ALTER TABLE leads ADD COLUMN extra_fields_json TEXT"))
         if lead_columns and "priority" not in lead_columns:
+            log.info("Adding priority column to leads")
             conn.execute(text("ALTER TABLE leads ADD COLUMN priority VARCHAR(32)"))
         if lead_columns and "priority_reason" not in lead_columns:
+            log.info("Adding priority_reason column to leads")
             conn.execute(text("ALTER TABLE leads ADD COLUMN priority_reason TEXT"))
         if lead_columns and "classification_json" not in lead_columns:
+            log.info("Adding classification_json column to leads")
             conn.execute(text("ALTER TABLE leads ADD COLUMN classification_json TEXT"))
         if lead_columns and "lead_quality" not in lead_columns:
+            log.info("Adding lead_quality column to leads")
             conn.execute(text("ALTER TABLE leads ADD COLUMN lead_quality VARCHAR(64) DEFAULT 'unknown'"))
         if lead_columns and "lead_notes" not in lead_columns:
+            log.info("Adding lead_notes column to leads")
             conn.execute(text("ALTER TABLE leads ADD COLUMN lead_notes TEXT DEFAULT ''"))
-        notification_columns = _columns_for(engine, "notifications")
+        notification_columns = _columns_for(conn, "notifications")
         if notification_columns and "recipient_type" not in notification_columns:
+            log.info("Adding recipient_type column to notifications")
             conn.execute(text("ALTER TABLE notifications ADD COLUMN recipient_type VARCHAR(32)"))
         if notification_columns and "policy_snapshot_json" not in notification_columns:
+            log.info("Adding policy_snapshot_json column to notifications")
             conn.execute(text("ALTER TABLE notifications ADD COLUMN policy_snapshot_json TEXT"))
         if notification_columns and "attempt_number" not in notification_columns:
+            log.info("Adding attempt_number column to notifications")
             conn.execute(text("ALTER TABLE notifications ADD COLUMN attempt_number INTEGER DEFAULT 1"))
+    log.info("DB migration step complete: add_missing_tenant_columns")
 
 
 def _scalar(conn, sql: str, params: dict):
@@ -115,6 +137,7 @@ def _scalar(conn, sql: str, params: dict):
 
 
 def ensure_default_tenant(engine, settings):
+    log.info("DB migration step starting: ensure_default_tenant")
     now = datetime.now(timezone.utc)
     slug = settings.default_tenant_slug or "default"
     name = settings.default_tenant_name or "Default Plumbing"
@@ -228,7 +251,7 @@ def ensure_default_tenant(engine, settings):
                     },
                 )
 
-        if "accepts_live_calls" in _columns_for(engine, "tenant_phone_numbers"):
+        if "accepts_live_calls" in _columns_for(conn, "tenant_phone_numbers"):
             conn.execute(
                 text(
                     "UPDATE tenant_phone_numbers SET accepts_live_calls = :accepts_live_calls "
@@ -238,16 +261,18 @@ def ensure_default_tenant(engine, settings):
             )
 
         for table_name in TENANT_SCOPED_TABLES:
-            if "tenant_id" in _columns_for(engine, table_name):
+            if "tenant_id" in _columns_for(conn, table_name):
                 conn.execute(
                     text(f"UPDATE {table_name} SET tenant_id = :tenant_id WHERE tenant_id IS NULL"),
                     {"tenant_id": tenant_id},
                 )
 
+    log.info("DB migration step complete: ensure_default_tenant")
     return tenant_id
 
 
 def ensure_default_prompt_profiles(engine):
+    log.info("DB migration step starting: ensure_default_prompt_profiles")
     now = datetime.now(timezone.utc)
     with engine.begin() as conn:
         tenants = conn.execute(
@@ -300,9 +325,11 @@ def ensure_default_prompt_profiles(engine):
                     "updated_at": now,
                 },
             )
+    log.info("DB migration step complete: ensure_default_prompt_profiles")
 
 
 def ensure_default_telephony_profiles(engine, default_tenant_id, settings):
+    log.info("DB migration step starting: ensure_default_telephony_profiles")
     now = datetime.now(timezone.utc)
     with engine.begin() as conn:
         tenants = conn.execute(text("SELECT id, slug FROM tenants")).mappings().all()
@@ -355,9 +382,11 @@ def ensure_default_telephony_profiles(engine, default_tenant_id, settings):
                         "live_enabled_at": now,
                     },
                 )
+    log.info("DB migration step complete: ensure_default_telephony_profiles")
 
 
 def ensure_default_intake_policies(engine):
+    log.info("DB migration step starting: ensure_default_intake_policies")
     now = datetime.now(timezone.utc)
     with engine.begin() as conn:
         tenants = conn.execute(text("SELECT id FROM tenants")).mappings().all()
@@ -415,9 +444,11 @@ def ensure_default_intake_policies(engine):
                     "updated_at": now,
                 },
             )
+    log.info("DB migration step complete: ensure_default_intake_policies")
 
 
 def ensure_default_notification_policies(engine):
+    log.info("DB migration step starting: ensure_default_notification_policies")
     now = datetime.now(timezone.utc)
     with engine.begin() as conn:
         tenants = conn.execute(
@@ -479,13 +510,16 @@ def ensure_default_notification_policies(engine):
                         "updated_at": now,
                     },
                 )
+    log.info("DB migration step complete: ensure_default_notification_policies")
 
 
 def run_schema_migrations(engine, settings):
+    log.info("DB migrations starting")
     add_missing_tenant_columns(engine)
     default_tenant_id = ensure_default_tenant(engine, settings)
     ensure_default_telephony_profiles(engine, default_tenant_id, settings)
     ensure_default_prompt_profiles(engine)
     ensure_default_intake_policies(engine)
     ensure_default_notification_policies(engine)
+    log.info("DB migrations complete")
     return default_tenant_id

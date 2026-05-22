@@ -623,7 +623,13 @@ def record_media_stream_done(
 
 @app.on_event("startup")
 async def on_startup():
-    init_db()
+    log.info("Application startup: starting database initialization")
+    try:
+        init_db()
+    except Exception:
+        log.exception("Application startup failed during database initialization")
+        raise
+    log.info("Application startup: database initialization complete")
     log.info("=== Plumber Receptionist (OpenAI Realtime) starting ===")
     log.info(f"  OPENAI_API_KEY       : {'SET' if OPENAI_API_KEY       else 'MISSING'}")
     log.info(f"  TWILIO_ACCOUNT_SID   : {'SET' if TWILIO_ACCOUNT_SID   else 'MISSING'}")

@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import logging
 
 from sqlalchemy import create_engine
 from sqlalchemy.orm import sessionmaker
@@ -6,6 +7,9 @@ from sqlalchemy.orm import sessionmaker
 from config.settings import get_settings
 from storage.migrations import run_schema_migrations
 from storage.models import Base
+
+
+log = logging.getLogger("plumber")
 
 
 def normalize_database_url(database_url: str) -> str:
@@ -19,7 +23,7 @@ def normalize_database_url(database_url: str) -> str:
 def _connect_args(database_url: str) -> dict:
     if database_url.startswith("sqlite:"):
         return {"check_same_thread": False}
-    return {}
+    return {"connect_timeout": 10}
 
 
 def _make_engine(database_url: str):
@@ -44,8 +48,16 @@ def configure_database(database_url: str):
 
 def init_db(settings=None):
     active_settings = settings or get_settings()
-    Base.metadata.create_all(bind=engine)
-    run_schema_migrations(engine, active_settings)
+    log.info("DB init starting")
+    try:
+        log.info("DB init step starting: create_all")
+        Base.metadata.create_all(bind=engine)
+        log.info("DB init step complete: create_all")
+        run_schema_migrations(engine, active_settings)
+        log.info("DB init complete")
+    except Exception:
+        log.exception("DB init failed during startup")
+        raise
 
 
 @contextmanager
