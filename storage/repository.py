@@ -7,6 +7,8 @@ from storage.database import session_scope
 from storage.models import (
     Call,
     CallEvent,
+    CallFeedback,
+    CallReview,
     Lead,
     Notification,
     Tenant,
@@ -42,6 +44,60 @@ def _json_text_list(value: Optional[str]) -> list[str]:
     if not isinstance(parsed, list):
         return []
     return [str(item).strip() for item in parsed if str(item).strip()]
+
+
+REVIEW_STATUSES = {
+    "unreviewed",
+    "good",
+    "needs_review",
+    "bad",
+    "follow_up_needed",
+}
+
+REVIEW_TAGS = {
+    "good_call",
+    "awkward_ai",
+    "repeated_question",
+    "caller_interrupted",
+    "caller_hung_up",
+    "missed_field",
+    "wrong_field",
+    "invented_info",
+    "premature_submit",
+    "validation_loop",
+    "sms_failed",
+    "notification_wrong_recipient",
+    "emergency_missed",
+    "emergency_false_positive",
+    "tenant_config_issue",
+    "prompt_issue",
+    "intake_policy_issue",
+    "realtime_model_issue",
+    "twilio_or_connection_issue",
+    "openai_error",
+    "other",
+}
+
+LEAD_QUALITIES = {
+    "unknown",
+    "good",
+    "incomplete",
+    "wrong_info",
+    "duplicate",
+    "test",
+}
+
+FEEDBACK_SOURCES = {"internal", "plumber", "caller"}
+
+ACTION_NEEDED_VALUES = {
+    "none",
+    "prompt_update",
+    "intake_policy_update",
+    "notification_policy_update",
+    "bug_fix",
+    "conversation_polish",
+    "follow_up_with_customer",
+}
 
 
 def _normalize_phone(value: Optional[str]) -> str:
@@ -148,7 +204,61 @@ def _prompt_profile_summary(profile: TenantAIProfile) -> dict:
     }
 
 
+def _call_review_summary(review: Optional[CallReview], call: Optional[Call] = None) -> dict:
+    if review is None:
+        return {
+            "id": None,
+            "tenant_id": call.tenant_id if call else None,
+            "call_id": call.id if call else None,
+            "call_sid": call.call_sid if call else None,
+            "review_status": "unreviewed",
+            "review_tags": [],
+            "review_tags_json": "[]",
+            "internal_notes": "",
+            "reviewed_at": None,
+            "reviewed_by": None,
+            "created_at": None,
+            "updated_at": None,
+        }
+    try:
+        tags = json.loads(review.review_tags_json or "[]")
+    except json.JSONDecodeError:
+        tags = []
+    if not isinstance(tags, list):
+        tags = []
+    return {
+        "id": review.id,
+        "tenant_id": review.tenant_id,
+        "call_id": review.call_id,
+        "call_sid": review.call_sid,
+        "review_status": review.review_status or "unreviewed",
+        "review_tags": [str(tag) for tag in tags if str(tag).strip()],
+        "review_tags_json": review.review_tags_json,
+        "internal_notes": review.internal_notes or "",
+        "reviewed_at": review.reviewed_at,
+        "reviewed_by": review.reviewed_by,
+        "created_at": review.created_at,
+        "updated_at": review.updated_at,
+    }
+
+
+def _feedback_summary(feedback: CallFeedback) -> dict:
+    return {
+        "id": feedback.id,
+        "tenant_id": feedback.tenant_id,
+        "call_id": feedback.call_id,
+        "call_sid": feedback.call_sid,
+        "feedback_source": feedback.feedback_source,
+        "feedback_text": feedback.feedback_text,
+        "action_needed": feedback.action_needed,
+        "resolved": feedback.resolved,
+        "created_at": feedback.created_at,
+        "resolved_at": feedback.resolved_at,
+    }
+
+
 def _call_summary(call: Call) -> dict:
+    review = _call_review_summary(call.review, call)
     return {
         "id": call.id,
         "tenant_id": call.tenant_id,
@@ -162,6 +272,9 @@ def _call_summary(call: Call) -> dict:
         "status": call.status,
         "started_at": call.started_at,
         "ended_at": call.ended_at,
+        "review_status": review["review_status"],
+        "review_tags": review["review_tags"],
+        "review_tags_json": review["review_tags_json"],
     }
 
 
@@ -186,6 +299,8 @@ def _lead_summary(lead: Lead) -> dict:
         "priority": lead.priority,
         "priority_reason": lead.priority_reason,
         "classification_json": lead.classification_json,
+        "lead_quality": lead.lead_quality or "unknown",
+        "lead_notes": lead.lead_notes or "",
         "status": lead.status,
         "created_at": lead.created_at,
     }
@@ -896,6 +1011,120 @@ def record_call_event(
         return _event_summary(event)
 
 
+def _normalize_review_status(status: str) -> str:
+    value = (status or "unreviewed").strip()
+    return value if value in REVIEW_STATUSES else "unreviewed"
+
+
+def _normalize_review_tags(tags: Optional[list[str]]) -> list[str]:
+    normalized = []
+    for tag in tags or []:
+        value = str(tag or "").strip()
+        if value in REVIEW_TAGS and value not in normalized:
+            normalized.append(value)
+    return normalized
+
+
+def get_call_review(call_sid: str) -> dict:
+    with session_scope() as db:
+        call = _get_call(db, call_sid)
+        review = db.query(CallReview).filter(CallReview.call_sid == call_sid).one_or_none()
+        return _call_review_summary(review, call)
+
+
+def save_call_review(
+    call_sid: str,
+    review_status: str = "unreviewed",
+    review_tags: Optional[list[str]] = None,
+    internal_notes: str = "",
+    reviewed_by: str = "admin",
+) -> Optional[dict]:
+    with session_scope() as db:
+        call = _get_call(db, call_sid)
+        if call is None:
+            return None
+        review = db.query(CallReview).filter(CallReview.call_sid == call_sid).one_or_none()
+        if review is None:
+            review = CallReview(
+                tenant_id=call.tenant_id,
+                call_id=call.id,
+                call_sid=call_sid,
+            )
+            db.add(review)
+        review.tenant_id = call.tenant_id
+        review.call_id = call.id
+        review.review_status = _normalize_review_status(review_status)
+        review.review_tags_json = json.dumps(_normalize_review_tags(review_tags))
+        review.internal_notes = (internal_notes or "").strip()
+        review.reviewed_by = (reviewed_by or "admin").strip() or "admin"
+        review.reviewed_at = utcnow()
+        review.updated_at = utcnow()
+        db.flush()
+        return _call_review_summary(review, call)
+
+
+def update_lead_review(lead_id: int, lead_quality: str = "unknown", lead_notes: str = "") -> Optional[dict]:
+    with session_scope() as db:
+        lead = db.query(Lead).filter(Lead.id == lead_id).one_or_none()
+        if lead is None:
+            return None
+        quality = (lead_quality or "unknown").strip()
+        lead.lead_quality = quality if quality in LEAD_QUALITIES else "unknown"
+        lead.lead_notes = (lead_notes or "").strip()
+        db.flush()
+        return _lead_summary(lead)
+
+
+def add_call_feedback(
+    call_sid: str,
+    feedback_source: str = "internal",
+    feedback_text: str = "",
+    action_needed: str = "none",
+    resolved: bool = False,
+) -> Optional[dict]:
+    with session_scope() as db:
+        call = _get_call(db, call_sid)
+        if call is None:
+            return None
+        source = (feedback_source or "internal").strip()
+        action = (action_needed or "none").strip()
+        feedback = CallFeedback(
+            tenant_id=call.tenant_id,
+            call_id=call.id,
+            call_sid=call_sid,
+            feedback_source=source if source in FEEDBACK_SOURCES else "internal",
+            feedback_text=(feedback_text or "").strip(),
+            action_needed=action if action in ACTION_NEEDED_VALUES else "none",
+            resolved=bool(resolved),
+            resolved_at=utcnow() if resolved else None,
+        )
+        db.add(feedback)
+        db.flush()
+        return _feedback_summary(feedback)
+
+
+def set_call_feedback_resolved(feedback_id: int, resolved: bool = True) -> Optional[dict]:
+    with session_scope() as db:
+        feedback = db.query(CallFeedback).filter(CallFeedback.id == feedback_id).one_or_none()
+        if feedback is None:
+            return None
+        feedback.resolved = bool(resolved)
+        feedback.resolved_at = utcnow() if resolved else None
+        db.flush()
+        return _feedback_summary(feedback)
+
+
+def list_call_feedback(call_sid: str) -> list[dict]:
+    with session_scope() as db:
+        feedback_rows = (
+            db.query(CallFeedback)
+            .filter(CallFeedback.call_sid == call_sid)
+            .order_by(desc(CallFeedback.created_at))
+            .all()
+        )
+        return [_feedback_summary(feedback) for feedback in feedback_rows]
+
+
 def get_lead_by_call_sid(call_sid: str) -> Optional[dict]:
     with session_scope() as db:
         lead = db.query(Lead).filter(Lead.call_sid == call_sid).one_or_none()
@@ -1096,6 +1325,226 @@ def list_recent_call_events(limit: int = 50, tenant_id: Optional[int] = None) ->
         return [_event_summary(event) for event in events]
 
 
+def _event_type_set(events: list[CallEvent]) -> set[str]:
+    return {event.event_type for event in events}
+
+
+def _attention_reasons(leads: list[Lead], notifications: list[Notification], events: list[CallEvent], review: dict) -> list[str]:
+    reasons = []
+    event_types = _event_type_set(events)
+    if not leads:
+        reasons.append("no_lead")
+    if "validation_failed" in event_types:
+        reasons.append("validation_failed")
+    if "tool_args_parse_failed" in event_types:
+        reasons.append("tool_args_parse_failed")
+    if "openai_realtime_error" in event_types or "openai_reader_error" in event_types:
+        reasons.append("openai_error")
+    if any(notification.status == "failed" for notification in notifications) or "sms_failed" in event_types:
+        reasons.append("sms_failed")
+    if any(lead.priority == "emergency" for lead in leads):
+        reasons.append("emergency")
+    if not leads and ("twilio_stream_stopped" in event_types or "twilio_websocket_disconnected" in event_types):
+        reasons.append("caller_or_connection_ended_before_lead")
+    if review.get("review_status") in {"needs_review", "bad", "follow_up_needed"}:
+        reasons.append(f"review_{review.get('review_status')}")
+    return list(dict.fromkeys(reasons))
+
+
+def _notification_status_for(notifications: list[Notification]) -> str:
+    if not notifications:
+        return "none"
+    statuses = {notification.status for notification in notifications}
+    if "failed" in statuses:
+        return "failed"
+    if "sent" in statuses:
+        return "sent"
+    if "pending" in statuses:
+        return "pending"
+    return ",".join(sorted(statuses))
+
+
+def _review_queue_row(call: Call, leads: list[Lead], notifications: list[Notification], events: list[CallEvent]) -> dict:
+    review = _call_review_summary(call.review, call)
+    lead = leads[0] if leads else None
+    reasons = _attention_reasons(leads, notifications, events, review)
+    tenant_name = call.tenant.name if call.tenant else ""
+    return {
+        **_call_summary(call),
+        "tenant_name": tenant_name,
+        "lead_created": "yes" if lead else "no",
+        "lead_id": lead.id if lead else None,
+        "priority": lead.priority if lead else "",
+        "notification_status": _notification_status_for(notifications),
+        "attention_reasons": reasons,
+        "attention_reasons_text": ", ".join(reasons),
+        "review_status": review["review_status"],
+        "review_tags": review["review_tags"],
+        "review_tags_text": ", ".join(review["review_tags"]),
+        "internal_notes": review["internal_notes"],
+    }
+
+
+def list_call_review_queue(
+    limit: int = 100,
+    tenant_id: Optional[int] = None,
+    review_status: str = "",
+    tag: str = "",
+    has_lead: str = "",
+    notification_status: str = "",
+    priority: str = "",
+    realtime_model: str = "",
+) -> list[dict]:
+    with session_scope() as db:
+        query = db.query(Call)
+        if tenant_id is not None:
+            query = query.filter(Call.tenant_id == tenant_id)
+        if realtime_model:
+            query = query.filter(Call.realtime_model == realtime_model)
+        calls = query.order_by(desc(Call.started_at)).limit(limit).all()
+        rows = []
+        for call in calls:
+            leads = (
+                db.query(Lead)
+                .filter(Lead.call_sid == call.call_sid)
+                .order_by(desc(Lead.created_at))
+                .all()
+            )
+            lead_ids = [lead.id for lead in leads]
+            notifications = []
+            if lead_ids:
+                notifications = db.query(Notification).filter(Notification.lead_id.in_(lead_ids)).all()
+            events = db.query(CallEvent).filter(CallEvent.call_sid == call.call_sid).all()
+            row = _review_queue_row(call, leads, notifications, events)
+            if review_status and row["review_status"] != review_status:
+                continue
+            if tag and tag not in row["review_tags"]:
+                continue
+            if has_lead == "yes" and not leads:
+                continue
+            if has_lead == "no" and leads:
+                continue
+            if notification_status and row["notification_status"] != notification_status:
+                continue
+            if priority and row["priority"] != priority:
+                continue
+            if not any([review_status, tag, has_lead, notification_status, priority, realtime_model]):
+                if row["review_status"] == "good" and not row["attention_reasons"]:
+                    continue
+                if row["review_status"] != "unreviewed" and not row["attention_reasons"]:
+                    continue
+            rows.append(row)
+        return rows
+
+
+def pilot_metrics(tenant_id: Optional[int] = None) -> dict:
+    with session_scope() as db:
+        calls_query = db.query(Call)
+        leads_query = db.query(Lead)
+        notifications_query = db.query(Notification)
+        if tenant_id is not None:
+            calls_query = calls_query.filter(Call.tenant_id == tenant_id)
+            leads_query = leads_query.filter(Lead.tenant_id == tenant_id)
+            notifications_query = notifications_query.filter(Notification.tenant_id == tenant_id)
+        total_calls = calls_query.count()
+        total_leads = leads_query.count()
+        notification_rows = notifications_query.all()
+        review_rows = db.query(CallReview)
+        if tenant_id is not None:
+            review_rows = review_rows.filter(CallReview.tenant_id == tenant_id)
+        reviews = review_rows.all()
+        by_tenant = []
+        tenants = db.query(Tenant).order_by(Tenant.id).all()
+        for tenant in tenants:
+            tenant_calls = db.query(Call).filter(Call.tenant_id == tenant.id).count()
+            tenant_leads = db.query(Lead).filter(Lead.tenant_id == tenant.id).count()
+            by_tenant.append({
+                "tenant_id": tenant.id,
+                "tenant": tenant.name,
+                "calls": tenant_calls,
+                "leads": tenant_leads,
+            })
+        return {
+            "total_calls": total_calls,
+            "calls_with_leads": total_leads,
+            "calls_without_leads": max(total_calls - total_leads, 0),
+            "sms_sent": sum(1 for notification in notification_rows if notification.status == "sent"),
+            "sms_failed": sum(1 for notification in notification_rows if notification.status == "failed"),
+            "emergency_leads": leads_query.filter(Lead.priority == "emergency").count(),
+            "unreviewed_calls": max(total_calls - sum(1 for review in reviews if review.review_status != "unreviewed"), 0),
+            "bad_or_needs_review_calls": sum(
+                1 for review in reviews if review.review_status in {"bad", "needs_review", "follow_up_needed"}
+            ),
+            "by_tenant": by_tenant,
+        }
+
+
+def _label_extra_field(key: str) -> str:
+    labels = {
+        "property_role": "Homeowner or renter",
+        "additional_notes": "Additional notes",
+    }
+    return labels.get(key, key.replace("_", " ").title())
+
+
+def build_call_summary_text(detail: dict) -> str:
+    call = detail.get("call") or {}
+    tenant = detail.get("tenant") or {}
+    leads = detail.get("leads") or []
+    notifications = detail.get("notifications") or []
+    review = detail.get("review") or {}
+    events = detail.get("events") or []
+    lead = leads[0] if leads else None
+    notification_status = "none"
+    if notifications:
+        statuses = [notification.get("status") for notification in notifications]
+        notification_status = "failed" if "failed" in statuses else ("sent" if "sent" in statuses else ", ".join(statuses))
+    lifecycle_exit = "unknown"
+    for event in events:
+        if event.get("event_type") == "media_stream_done":
+            try:
+                payload = json.loads(event.get("payload_json") or "{}")
+            except json.JSONDecodeError:
+                payload = {}
+            lifecycle_exit = payload.get("media_stream_exit_reason") or lifecycle_exit
+            break
+    lines = [
+        "Call Summary:",
+        f"Tenant: {tenant.get('name') or tenant.get('business_name') or 'Unknown'}",
+        f"Call SID: {call.get('call_sid') or ''}",
+        f"Outcome: {'Lead created' if lead else 'No lead created'}, notification {notification_status}",
+        f"Lifecycle exit: {lifecycle_exit}",
+        f"Realtime model: {call.get('realtime_model') or 'unknown'}",
+    ]
+    if lead:
+        lines.extend([
+            f"Priority: {(lead.get('priority') or 'normal').title()}",
+            f"Caller: {lead.get('name') or ''}, {lead.get('callback') or ''}",
+            f"Issue: {lead.get('issue') or ''}",
+            f"Urgency: {lead.get('urgency') or ''}",
+            f"Address: {lead.get('address') or ''}",
+        ])
+        extra_fields = lead.get("extra_fields") or {}
+        for key, value in extra_fields.items():
+            if key == "additional_notes":
+                continue
+            lines.append(f"Extra - {_label_extra_field(key)}: {value}")
+        if extra_fields.get("additional_notes"):
+            lines.append(f"Additional notes: {extra_fields.get('additional_notes')}")
+    else:
+        event_types = [event.get("event_type") for event in events[:8]]
+        lines.append(f"What happened: recent events include {', '.join(event_types) if event_types else 'no events recorded'}")
+    if review.get("review_status"):
+        tags = ", ".join(review.get("review_tags") or [])
+        review_line = f"Review: {review.get('review_status')}"
+        if tags:
+            review_line += f" - {tags}"
+        lines.append(review_line)
+    if review.get("internal_notes"):
+        lines.append(f"Internal notes: {review.get('internal_notes')}")
+    return "\n".join(lines)
+
+
 def get_call_detail(call_sid: str) -> dict:
     with session_scope() as db:
         call = _get_call(db, call_sid)
@@ -1110,11 +1559,22 @@ def get_call_detail(call_sid: str) -> dict:
                 .all()
             )
         events = db.query(CallEvent).filter(CallEvent.call_sid == call_sid).order_by(desc(CallEvent.created_at)).all()
-        return {
+        review = db.query(CallReview).filter(CallReview.call_sid == call_sid).one_or_none()
+        feedback_rows = (
+            db.query(CallFeedback)
+            .filter(CallFeedback.call_sid == call_sid)
+            .order_by(desc(CallFeedback.created_at))
+            .all()
+        )
+        detail = {
             "call": _call_summary(call) if call else None,
             "tenant": _tenant_summary(call.tenant) if call and call.tenant else None,
             "prompt_profile": _prompt_profile_summary(call.prompt_profile) if call and call.prompt_profile else None,
             "leads": [_lead_summary(lead) for lead in leads],
             "notifications": [_notification_summary(notification) for notification in notifications],
             "events": [_event_summary(event) for event in events],
+            "review": _call_review_summary(review, call),
+            "feedback": [_feedback_summary(feedback) for feedback in feedback_rows],
         }
+        detail["summary_text"] = build_call_summary_text(detail)
+        return detail

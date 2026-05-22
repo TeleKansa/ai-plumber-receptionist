@@ -289,7 +289,7 @@ def _page(title: str, body: str, status_code: int = 200) -> HTMLResponse:
   </style>
 </head>
 <body>
-  <nav><a href="/admin/leads">Dashboard</a><a href="/admin/tenants">Tenants</a></nav>
+  <nav><a href="/admin/review">Review queue</a><a href="/admin/metrics">Metrics</a><a href="/admin/leads">Dashboard</a><a href="/admin/tenants">Tenants</a></nav>
   <h1>{escape(title)}</h1>
   {body}
 </body>
@@ -316,8 +316,172 @@ def _parse_tenant_id(value: str) -> Optional[int]:
     return tenant_id if tenant_id > 0 else None
 
 
+def _parse_optional_int(value) -> Optional[int]:
+    if value in (None, ""):
+        return None
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        return None
+    return parsed if parsed > 0 else None
+
+
 def _parse_form_bool(value) -> bool:
     return str(value or "").lower() in {"1", "true", "yes", "on"}
+
+
+def _mask_phone(value: str) -> str:
+    text = str(value or "")
+    digits = "".join(ch for ch in text if ch.isdigit())
+    if len(digits) < 4:
+        return text
+    return f"...{digits[-4:]}"
+
+
+def _review_status_options(selected: str = "unreviewed") -> str:
+    options = [
+        ("unreviewed", "Unreviewed"),
+        ("good", "Good"),
+        ("needs_review", "Needs review"),
+        ("bad", "Bad"),
+        ("follow_up_needed", "Follow-up needed"),
+    ]
+    return _select("review_status", options, selected or "unreviewed")
+
+
+def _review_tag_checkboxes(selected: list[str]) -> str:
+    selected_set = set(selected or [])
+    rows = []
+    for tag in sorted(repository.REVIEW_TAGS):
+        checked = " checked" if tag in selected_set else ""
+        rows.append(f'<label style="display:inline-block; min-width: 220px;"><input type="checkbox" name="review_tags" value="{escape(tag)}"{checked}> {escape(tag)}</label>')
+    return "<div>" + "".join(rows) + "</div>"
+
+
+def _review_queue_table(rows: list[dict]) -> str:
+    if not rows:
+        return "<p>No calls match this review queue.</p>"
+    rendered = []
+    for row in rows:
+        call_sid = row.get("call_sid") or ""
+        rendered.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('started_at') or ''))}</td>"
+            f"<td>{escape(row.get('tenant_name') or '')}</td>"
+            f'<td><a href="/admin/calls/{escape(call_sid)}">{escape(call_sid)}</a></td>'
+            f"<td>{escape(_mask_phone(row.get('from_number') or ''))}</td>"
+            f"<td>{escape(row.get('status') or '')}</td>"
+            f"<td>{escape(row.get('review_status') or '')}</td>"
+            f"<td>{escape(row.get('priority') or '')}</td>"
+            f"<td>{escape(row.get('lead_created') or '')}</td>"
+            f"<td>{escape(row.get('notification_status') or '')}</td>"
+            f"<td>{escape(row.get('realtime_model') or '')}</td>"
+            f"<td>{escape(str(row.get('prompt_version_id') or ''))}</td>"
+            f"<td>{escape(row.get('review_tags_text') or '')}</td>"
+            f"<td>{escape(row.get('attention_reasons_text') or '')}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr>"
+        "<th>time</th><th>tenant</th><th>call_sid</th><th>from</th><th>status</th>"
+        "<th>review</th><th>priority</th><th>lead</th><th>notification</th>"
+        "<th>model</th><th>prompt</th><th>tags</th><th>why queued</th>"
+        "</tr></thead><tbody>"
+        f"{''.join(rendered)}"
+        "</tbody></table>"
+    )
+
+
+def _call_review_form(call_sid: str, review: dict) -> str:
+    return "\n".join(
+        [
+            f'<form method="post" action="/admin/calls/{escape(call_sid)}/review">',
+            _review_status_options(review.get("review_status") or "unreviewed"),
+            "<h4>Tags</h4>",
+            _review_tag_checkboxes(review.get("review_tags") or []),
+            "<br>",
+            _textarea("internal_notes", review.get("internal_notes") or "", rows=5),
+            "<br><br>",
+            '<button type="submit">Save Review</button>',
+            "</form>",
+        ]
+    )
+
+
+def _feedback_form(call_sid: str) -> str:
+    return "\n".join(
+        [
+            f'<form method="post" action="/admin/calls/{escape(call_sid)}/feedback">',
+            _select("feedback_source", [("internal", "Internal"), ("plumber", "Plumber"), ("caller", "Caller")], "internal"),
+            "<br><br>",
+            _select(
+                "action_needed",
+                [
+                    ("none", "None"),
+                    ("prompt_update", "Prompt update"),
+                    ("intake_policy_update", "Intake policy update"),
+                    ("notification_policy_update", "Notification policy update"),
+                    ("bug_fix", "Bug fix"),
+                    ("conversation_polish", "Conversation polish"),
+                    ("follow_up_with_customer", "Follow up with customer"),
+                ],
+                "none",
+            ),
+            "<br><br>",
+            _checkbox("resolved", False),
+            "<br><br>",
+            _textarea("feedback_text", "", rows=4),
+            "<br><br>",
+            '<button type="submit">Add Feedback</button>',
+            "</form>",
+        ]
+    )
+
+
+def _feedback_table(rows: list[dict]) -> str:
+    if not rows:
+        return "<p>No feedback yet.</p>"
+    body = []
+    for row in rows:
+        body.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('created_at') or ''))}</td>"
+            f"<td>{escape(row.get('feedback_source') or '')}</td>"
+            f"<td>{escape(row.get('feedback_text') or '')}</td>"
+            f"<td>{escape(row.get('action_needed') or '')}</td>"
+            f"<td>{escape('yes' if row.get('resolved') else 'no')}</td>"
+            f"<td>{escape(str(row.get('resolved_at') or ''))}</td>"
+            f"<td>{row.get('action') or ''}</td>"
+            "</tr>"
+        )
+    return (
+        "<table><thead><tr>"
+        "<th>created_at</th><th>source</th><th>feedback</th><th>action_needed</th>"
+        "<th>resolved</th><th>resolved_at</th><th>action</th>"
+        "</tr></thead><tbody>"
+        f"{''.join(body)}"
+        "</tbody></table>"
+    )
+
+
+def _important_events(events: list[dict]) -> list[dict]:
+    important = {
+        "validation_failed",
+        "tool_args_parse_failed",
+        "tool_call_incomplete",
+        "submit_service_request_attempt",
+        "lead_created",
+        "priority_classified",
+        "sms_sent",
+        "sms_failed",
+        "openai_realtime_error",
+        "twilio_stream_stopped",
+        "twilio_websocket_disconnected",
+        "media_stream_done",
+        "assistant_transcript",
+        "caller_transcript",
+    }
+    return [event for event in events if event.get("event_type") in important]
 
 
 def create_admin_router(settings: Settings) -> APIRouter:
@@ -346,6 +510,75 @@ def create_admin_router(settings: Settings) -> APIRouter:
             ]
         )
         return _page("Plumber Receptionist Admin", body)
+
+    @router.get("/admin/review", response_class=HTMLResponse)
+    async def admin_review_queue(
+        tenant_id: str = "",
+        review_status: str = "",
+        tag: str = "",
+        has_lead: str = "",
+        notification_status: str = "",
+        priority: str = "",
+        realtime_model: str = "",
+    ):
+        tenants = repository.list_tenants()
+        parsed_tenant_id = _parse_optional_int(tenant_id)
+        rows = repository.list_call_review_queue(
+            tenant_id=parsed_tenant_id,
+            review_status=review_status,
+            tag=tag,
+            has_lead=has_lead,
+            notification_status=notification_status,
+            priority=priority,
+            realtime_model=realtime_model,
+        )
+        tenant_options = [("", "all tenants")] + [(str(tenant["id"]), tenant["name"]) for tenant in tenants]
+        tag_options = [("", "any tag")] + [(tag_value, tag_value) for tag_value in sorted(repository.REVIEW_TAGS)]
+        body = "\n".join(
+            [
+                "<p>Use this queue to review real pilot calls, tag problems, and decide what to tune next.</p>",
+                '<form method="get" action="/admin/review">',
+                _select("tenant_id", tenant_options, str(parsed_tenant_id or "")),
+                " ",
+                _select("review_status", [("", "attention queue"), ("unreviewed", "unreviewed"), ("good", "good"), ("needs_review", "needs_review"), ("bad", "bad"), ("follow_up_needed", "follow_up_needed")], review_status),
+                " ",
+                _select("tag", tag_options, tag),
+                " ",
+                _select("has_lead", [("", "any lead status"), ("yes", "has lead"), ("no", "no lead")], has_lead),
+                " ",
+                _select("notification_status", [("", "any notification"), ("none", "none"), ("sent", "sent"), ("failed", "failed"), ("pending", "pending")], notification_status),
+                " ",
+                _select("priority", [("", "any priority"), ("normal", "normal"), ("urgent", "urgent"), ("emergency", "emergency")], priority),
+                " ",
+                _select("realtime_model", [("", "any model"), ("gpt-realtime-1.5", "gpt-realtime-1.5"), ("gpt-realtime-2", "gpt-realtime-2")], realtime_model),
+                ' <button type="submit">Filter</button>',
+                "</form>",
+                "<h2>Calls Needing Attention</h2>",
+                _review_queue_table(rows),
+            ]
+        )
+        return _page("Pilot Review Queue", body)
+
+    @router.get("/admin/metrics", response_class=HTMLResponse)
+    async def admin_metrics(tenant_id: str = ""):
+        parsed_tenant_id = _parse_optional_int(tenant_id)
+        metrics = repository.pilot_metrics(tenant_id=parsed_tenant_id)
+        tenants = repository.list_tenants()
+        tenant_options = [("", "all tenants")] + [(str(tenant["id"]), tenant["name"]) for tenant in tenants]
+        summary_row = {key: value for key, value in metrics.items() if key != "by_tenant"}
+        body = "\n".join(
+            [
+                '<form method="get" action="/admin/metrics">',
+                _select("tenant_id", tenant_options, str(parsed_tenant_id or "")),
+                ' <button type="submit">Filter</button>',
+                "</form>",
+                "<h2>Pilot Metrics</h2>",
+                _render_table([summary_row], list(summary_row.keys())),
+                "<h2>By Tenant</h2>",
+                _render_table(metrics.get("by_tenant") or [], ["tenant_id", "tenant", "calls", "leads"]),
+            ]
+        )
+        return _page("Pilot Metrics", body)
 
     @router.get("/admin/tenants", response_class=HTMLResponse)
     async def admin_tenants():
@@ -913,10 +1146,62 @@ def create_admin_router(settings: Settings) -> APIRouter:
         )
         return RedirectResponse(f"/admin/tenants/{tenant_id}", status_code=303)
 
+    @router.post("/admin/calls/{call_sid}/review")
+    async def admin_save_call_review(call_sid: str, request: Request):
+        form = await request.form()
+        review = repository.save_call_review(
+            call_sid,
+            review_status=str(form.get("review_status", "unreviewed")).strip(),
+            review_tags=[str(tag) for tag in form.getlist("review_tags")],
+            internal_notes=str(form.get("internal_notes", "")).strip(),
+            reviewed_by="admin",
+        )
+        if not review:
+            return _admin_not_found("Call Not Found", f"Call {call_sid} was not found.")
+        return RedirectResponse(f"/admin/calls/{call_sid}", status_code=303)
+
+    @router.post("/admin/calls/{call_sid}/feedback")
+    async def admin_add_call_feedback(call_sid: str, request: Request):
+        form = await request.form()
+        feedback = repository.add_call_feedback(
+            call_sid,
+            feedback_source=str(form.get("feedback_source", "internal")).strip(),
+            feedback_text=str(form.get("feedback_text", "")).strip(),
+            action_needed=str(form.get("action_needed", "none")).strip(),
+            resolved=_parse_form_bool(form.get("resolved")),
+        )
+        if not feedback:
+            return _admin_not_found("Call Not Found", f"Call {call_sid} was not found.")
+        return RedirectResponse(f"/admin/calls/{call_sid}", status_code=303)
+
+    @router.post("/admin/feedback/{feedback_id}/resolve")
+    async def admin_resolve_feedback(feedback_id: int, request: Request):
+        form = await request.form()
+        call_sid = str(form.get("call_sid", "")).strip()
+        feedback = repository.set_call_feedback_resolved(feedback_id, True)
+        if not feedback:
+            return _admin_not_found("Feedback Not Found", f"Feedback {feedback_id} was not found.")
+        return RedirectResponse(f"/admin/calls/{call_sid or feedback['call_sid']}", status_code=303)
+
+    @router.post("/admin/leads/{lead_id}/review")
+    async def admin_save_lead_review(lead_id: int, request: Request):
+        form = await request.form()
+        call_sid = str(form.get("call_sid", "")).strip()
+        lead = repository.update_lead_review(
+            lead_id,
+            lead_quality=str(form.get("lead_quality", "unknown")).strip(),
+            lead_notes=str(form.get("lead_notes", "")).strip(),
+        )
+        if not lead:
+            return _admin_not_found("Lead Not Found", f"Lead {lead_id} was not found.")
+        return RedirectResponse(f"/admin/calls/{call_sid or lead['call_sid']}", status_code=303)
+
     @router.get("/admin/calls/{call_sid}", response_class=HTMLResponse)
     async def admin_call_detail(call_sid: str):
         detail = repository.get_call_detail(call_sid)
         call_summary = detail.get("call")
+        if not call_summary:
+            return _admin_not_found("Call Not Found", f"Call {call_sid} was not found.")
         lifecycle_event_names = {
             "media_stream_started",
             "response_create_sent",
@@ -951,6 +1236,41 @@ def create_admin_router(settings: Settings) -> APIRouter:
             (event for event in lifecycle_events if event.get("event_type") == "media_stream_done"),
             None,
         )
+        review = detail.get("review") or {}
+        feedback = detail.get("feedback") or []
+        leads = detail.get("leads") or []
+        notifications = detail.get("notifications") or []
+        important_events = _important_events(events)
+        transcript_events = [
+            event for event in events if event.get("event_type") in {"assistant_transcript", "caller_transcript"}
+        ]
+        lead_review_forms = []
+        for lead in leads:
+            lead_review_forms.append(
+                "\n".join(
+                    [
+                        f'<form method="post" action="/admin/leads/{lead["id"]}/review">',
+                        f'<input type="hidden" name="call_sid" value="{escape(call_sid)}">',
+                        _select("lead_quality", [("unknown", "unknown"), ("good", "good"), ("incomplete", "incomplete"), ("wrong_info", "wrong_info"), ("duplicate", "duplicate"), ("test", "test")], lead.get("lead_quality") or "unknown"),
+                        "<br><br>",
+                        _textarea("lead_notes", lead.get("lead_notes") or "", rows=3),
+                        "<br><br>",
+                        '<button type="submit">Save Lead Review</button>',
+                        "</form>",
+                    ]
+                )
+            )
+        feedback_rows = []
+        for item in feedback:
+            resolve = ""
+            if not item.get("resolved"):
+                resolve = (
+                    f'<form method="post" action="/admin/feedback/{item["id"]}/resolve">'
+                    f'<input type="hidden" name="call_sid" value="{escape(call_sid)}">'
+                    '<button type="submit">Mark resolved</button>'
+                    "</form>"
+                )
+            feedback_rows.append({**item, "action": resolve})
         body = "\n".join(
             [
                 "<h2>Call Summary</h2>",
@@ -958,6 +1278,25 @@ def create_admin_router(settings: Settings) -> APIRouter:
                     [call_summary] if call_summary else [],
                     ["call_sid", "tenant_id", "prompt_version_id", "realtime_model", "realtime_reasoning_effort", "from_number", "to_number", "status", "started_at", "ended_at"],
                 ),
+                f'<p><a href="/admin/review">Back to review queue</a> | <a href="/admin/leads">Back to dashboard</a></p>',
+                "<h2>Copy-Friendly PM Summary</h2>",
+                f'<textarea readonly rows="14" style="width: 100%; max-width: 900px;">{escape(detail.get("summary_text") or "")}</textarea>',
+                "<h2>Review</h2>",
+                _render_table([review], ["review_status", "review_tags", "internal_notes", "reviewed_at", "reviewed_by"]),
+                _call_review_form(call_sid, review),
+                "<h2>Feedback</h2>",
+                _feedback_table(feedback_rows),
+                "<h3>Add Feedback</h3>",
+                _feedback_form(call_sid),
+                "<h2>Lead</h2>",
+                _render_table(leads, ["id", "tenant_id", "call_sid", "name", "callback", "address", "issue", "urgency", "priority", "priority_reason", "extra_fields", "lead_quality", "lead_notes", "status", "created_at"]),
+                "".join(lead_review_forms),
+                "<h2>Notification Attempts</h2>",
+                _render_table(notifications, ["id", "tenant_id", "lead_id", "channel", "to_number", "recipient_type", "status", "attempt_number", "provider_message_sid", "error", "created_at", "sent_at"]),
+                "<h2>Important Events</h2>",
+                _render_table(important_events, ["created_at", "event_type", "payload_json"]),
+                "<h2>Transcript Snippets</h2>",
+                _render_table(transcript_events, ["created_at", "event_type", "payload_json"]),
                 "<h2>Lifecycle Debug</h2>",
                 "<p>These events distinguish app hangup, Twilio stop, websocket disconnect, OpenAI reader failure, and unknown exits.</p>",
                 "<h3>Latest Exit Snapshot</h3>",

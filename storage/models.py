@@ -31,6 +31,8 @@ class Call(Base):
     prompt_profile = relationship("TenantAIProfile")
     leads = relationship("Lead", back_populates="call")
     events = relationship("CallEvent", back_populates="call")
+    review = relationship("CallReview", back_populates="call", uselist=False)
+    feedback = relationship("CallFeedback", back_populates="call")
 
 
 class Lead(Base):
@@ -50,6 +52,8 @@ class Lead(Base):
     priority = Column(String(32), nullable=True)
     priority_reason = Column(Text, nullable=True)
     classification_json = Column(Text, nullable=True)
+    lead_quality = Column(String(64), nullable=False, default="unknown")
+    lead_notes = Column(Text, nullable=False, default="")
     status = Column(String(64), nullable=False, default="submitted")
     created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
 
@@ -93,6 +97,43 @@ class CallEvent(Base):
 
     tenant = relationship("Tenant", back_populates="events")
     call = relationship("Call", back_populates="events")
+
+
+class CallReview(Base):
+    __tablename__ = "call_reviews"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    call_id = Column(Integer, ForeignKey("calls.id"), unique=True, nullable=True, index=True)
+    call_sid = Column(String(128), unique=True, nullable=False, index=True)
+    review_status = Column(String(64), nullable=False, default="unreviewed")
+    review_tags_json = Column(Text, nullable=False, default="[]")
+    internal_notes = Column(Text, nullable=False, default="")
+    reviewed_at = Column(DateTime(timezone=True), nullable=True)
+    reviewed_by = Column(String(128), nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    updated_at = Column(DateTime(timezone=True), nullable=False, default=utcnow, onupdate=utcnow)
+
+    tenant = relationship("Tenant")
+    call = relationship("Call", back_populates="review")
+
+
+class CallFeedback(Base):
+    __tablename__ = "call_feedback"
+
+    id = Column(Integer, primary_key=True)
+    tenant_id = Column(Integer, ForeignKey("tenants.id"), nullable=True, index=True)
+    call_id = Column(Integer, ForeignKey("calls.id"), nullable=True, index=True)
+    call_sid = Column(String(128), nullable=False, index=True)
+    feedback_source = Column(String(64), nullable=False, default="internal")
+    feedback_text = Column(Text, nullable=False, default="")
+    action_needed = Column(String(64), nullable=False, default="none")
+    resolved = Column(Boolean, nullable=False, default=False)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=utcnow)
+    resolved_at = Column(DateTime(timezone=True), nullable=True)
+
+    tenant = relationship("Tenant")
+    call = relationship("Call", back_populates="feedback")
 
 
 class Tenant(Base):

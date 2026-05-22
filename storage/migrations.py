@@ -92,6 +92,10 @@ def add_missing_tenant_columns(engine):
             conn.execute(text("ALTER TABLE leads ADD COLUMN priority_reason TEXT"))
         if lead_columns and "classification_json" not in lead_columns:
             conn.execute(text("ALTER TABLE leads ADD COLUMN classification_json TEXT"))
+        if lead_columns and "lead_quality" not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN lead_quality VARCHAR(64) DEFAULT 'unknown'"))
+        if lead_columns and "lead_notes" not in lead_columns:
+            conn.execute(text("ALTER TABLE leads ADD COLUMN lead_notes TEXT DEFAULT ''"))
         notification_columns = _columns_for(engine, "notifications")
         if notification_columns and "recipient_type" not in notification_columns:
             conn.execute(text("ALTER TABLE notifications ADD COLUMN recipient_type VARCHAR(32)"))
