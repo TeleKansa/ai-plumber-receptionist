@@ -1,25 +1,21 @@
 # STATE
 
-Updated: 2026-06-11 (session 2, end)
+Updated: 2026-06-11 (session 3, end)
+
+## ⚠️ LIVE WIRE
+Production = Railway service deploying GitHub branch `phase-1a-stability-guardrails` (auto-deploy ON). Any push to that branch hits the live phone line. Never push it without full safety protocol + explicit per-change owner approval (D-007). Postgres service Online (tenant config lives there — charter's config-as-code applies post-consolidation).
 
 ## Phase
-P0 housekeeping DONE. P1 core/vertical split CODE-COMPLETE on branch `p1/core-vertical-split` @ c1aa2fa with 11/11 regression evidence (D-006). Awaiting owner: A-001 (Railway source check) and A-002 (merge approval). Repo working tree is left checked out on the P1 branch for review.
+Reconciliation DONE (D-008, read-only). Awaiting owner decision on A-003 (consolidation plan, ops/CONSOLIDATION_PLAN.md). After approval: Phase A prep → cutover → then P0 continuation (/version endpoint, real config snapshot from Postgres) and the §1.1 refactor redo against workflow/prompt_builder.py.
 
-## Key discovery this session (D-005)
-`legacy-snapshot/` at repo root = parked multi-tenant variant (Postgres, admin pages) on unmerged branch `phase-1a-stability-guardrails` of the same GitHub repo. Explains the charter's "tenant config in Postgres". GitHub main = the simple single-file app. Which branch Railway deploys is unknown → A-001. legacy-snapshot contains live secrets; now gitignored, never to be committed.
+## Production truth (corrected this session)
+- Live build: multi-tenant app @ 77b5537 (2026-05-21) — SQLAlchemy/Postgres, tenant routing by called number, telephony gate with testing-tenant + allowed_test_callers path (the charter's test path EXISTS in production), workflow/prompt_builder.py, admin UI.
+- GitHub main = old single-file app + charter/ops docs. Railway ignores main. Local main is 2 ops commits ahead of origin (push pending A-003 Phase A2).
+- Session-2 P1 split (c1aa2fa) targeted the wrong baseline; A-002 withdrawn; branch to be archive-tagged (A-003 Phase A1). Harness methodology carries forward.
+- legacy-snapshot/: zero unique work (D-008); gitignored; owner to archive its .env then delete the folder.
 
-## Live system (verified facts)
-- One live tenant: plumber line. Single-tenant FastAPI app (`main.py`) on Railway at `ai-plumber-receptionist-production.up.railway.app`. `/health` returned ok on 2026-06-11.
-- Lead delivery: SMS to `PLUMBER_PHONE_NUMBER`. No call recording anywhere in code.
-- No Postgres / tenant DB exists in this repo (no driver in requirements). Charter's "tenant config in Postgres" does not match code — operating assumption: repo is the only source of truth (DECISIONS D-003).
-- git main = origin/main = a2f0585 (docs-only). Railway deploy of a2f0585 unverified — owner action queued (APPROVAL_QUEUE A-001).
+## Owner rulings in force (D-007)
+Test path approved in principle (scripted sim now; test number purchased in one batch with shoreline Twilio funding). Metrics logging approved as P1 item (manual Railway/Twilio reads until then). Repo rename deferred. Legacy PAT being revoked — claude-fleet token only.
 
-## Owner direction (2026-06-11, D-002)
-Defer Twilio number purchase and go-live scripts. Order: P0 → P1. Plumber behavior must be preserved exactly. Bring acceptance evidence before approvals.
-
-## Branch policy
-`main` = production (Railway auto-deploys). P1 refactor lives on `p1/core-vertical-split` and merges only after acceptance evidence is reviewed by owner.
-
-## Blockers
-- a2f0585 deploy confirmation (owner, 30s in Railway dashboard).
-- Live test call path: no testing tenant exists; P1 acceptance uses scripted media-stream regression (charter-permitted) + golden equivalence. A live test number remains deferred until owner approves spend.
+## Working tree note
+Repo checked out on main. Untracked leftovers from session 2 (core/, tests/, verticals/ — committed on the archived p1 branch) can't be deleted from the sandbox (mount blocks file deletion); harmless, not gitignored, do not commit them on main.

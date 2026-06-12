@@ -1,6 +1,6 @@
 # Metrics
 
-Status: NO persistent metrics source exists. Code logs call events to stdout (Railway logs) only; nothing stores call outcomes. Until call-outcome logging ships (backlog, post-P1), weekly numbers require manual reads of Railway logs + Twilio console.
+Status (corrected session 3): the PRODUCTION build records calls/leads/events in Postgres (storage/repository.py) — better than session-2 assessment, which examined the wrong branch. Until we have a DB read path + the approved call-outcome metrics work (D-007 ruling 3), weekly numbers are pulled manually from Railway logs + Twilio console; source must be noted per row.
 
 | Week | Tenant | Calls answered | Qualification completion | Transfer success | Missed/failed | Notes |
 |---|---|---|---|---|---|---|

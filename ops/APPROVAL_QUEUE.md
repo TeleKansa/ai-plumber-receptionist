@@ -1,16 +1,19 @@
 # Approval Queue
 
-## A-001 — OPEN — Railway dashboard check (owner, ~1 min, answers TWO questions)
-Railway dashboard → project → Deployments / Settings → Source. Report back: (1) which GitHub **branch** the service deploys (main? phase-1a-stability-guardrails?), and (2) whether the newest deployment shows commit `a2f0585` with status Success. Question 1 matters because of D-005: a multi-tenant variant exists on an unmerged branch and HTTP probes can't tell which build is live. Optionally paste a Railway project token for CLI verification in future sessions.
+## A-003 — OPEN — Consolidation plan (ops/CONSOLIDATION_PLAN.md)
+Approve/modify the A→B→C plan: tag archives → push ops-only main → `consolidation` branch from phase-1a tip + merge main into it → byte-identity gate → owner repoints Railway Source to main at a chosen low-call window → verification call → phase-1a frozen as rollback. Decisions needed from owner: (1) approve plan as written or with changes; (2) pick the cutover window; (3) confirm owner executes the Railway Source repoint personally.
 
-## A-002 — READY FOR REVIEW — Merge p1/core-vertical-split @ c1aa2fa to main
-P1 split is code-complete with acceptance evidence (D-006): 11/11 regression tests prove byte-identical behavior vs pre-refactor recordings; zero plumber logic in core. Merging deploys the refactored engine to the live plumber line (if Railway tracks main — see A-001). Recommended order: resolve A-001 first → owner approves merge → deploy → one live test call to the plumber line → log transcript. Do not merge before reviewing.
+## CLOSED / WITHDRAWN
+- A-001 — CLOSED 2026-06-11: owner confirmed via dashboard — production deploys `phase-1a-stability-guardrails` (auto-deploy ON), Postgres Online, active deploy May 21; main push triggered nothing.
+- A-002 — WITHDRAWN 2026-06-11: merge of p1/core-vertical-split is moot — it refactored the non-production single-file app (D-008). Branch will be archive-tagged in A-003 Phase A1.
 
-## Deferred by owner (2026-06-11, D-002) — do not action yet
-- Shoreline Twilio number purchase (~$5–15/mo + usage)
-- Shoreline consent script + greeting/identity script approval
-- Optional test Twilio number (~$1–2/mo) for live regression calls
+## Deferred — batched into ONE Twilio errand (owner, when ready)
+- Shoreline tracking number purchase (~$5–15/mo + usage)
+- Dedicated test number for the test path (~$1–2/mo) — approved in principle (D-007 ruling 2)
+- Shoreline consent script + greeting/identity script approval (queued for owner review before shoreline go-live)
 
 ## Standing flags
+- LIVE WIRE: no push to phase-1a-stability-guardrails, ever, without protocol + per-change owner approval. After cutover, the same rule applies to main.
 - Recording: OFF everywhere; never enable without approval + disclosure line (FL two-party consent relevant).
 - Spend alert threshold: flag if projected monthly OpenAI usage > $50.
+- Only-a-real-call-can-verify queue (D-007 ruling 2): post-cutover verification call (A-003 B3); eventual plumber-line regression call after the §1.1 refactor redo lands.
