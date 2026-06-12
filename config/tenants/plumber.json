@@ -1,0 +1,24 @@
+{
+  "tenant": "plumber",
+  "type": "internal_fleet",
+  "status": "live",
+  "vertical": "plumbing",
+  "exported_from": "main.py @ a2f0585 (code-embedded config; no DB exists — DECISIONS D-003)",
+  "exported_at": "2026-06-11",
+  "host": "ai-plumber-receptionist-production.up.railway.app",
+  "openai_model": "gpt-realtime-1.5",
+  "recording_enabled": false,
+  "env_var_names": {
+    "openai_api_key": "OPENAI_API_KEY",
+    "twilio_account_sid": "TWILIO_ACCOUNT_SID",
+    "twilio_auth_token": "TWILIO_AUTH_TOKEN",
+    "ai_line_number": "TWILIO_PHONE_NUMBER",
+    "lead_sms_recipient": "PLUMBER_PHONE_NUMBER"
+  },
+  "delivery": {
+    "channel": "sms",
+    "to_env": "PLUMBER_PHONE_NUMBER",
+    "from_env": "TWILIO_PHONE_NUMBER"
+  },
+  "behavior_config": "verticals/plumbing.json after P1 merge; until then the canonical prompt/tools/greeting live in main.py @ a2f0585"
+}

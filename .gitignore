@@ -35,3 +35,5 @@ Thumbs.db
 # Local database fallback
 local_dev.db
 local_dev.db-*
+legacy-snapshot/
+.git/*.stale*
