@@ -13,6 +13,7 @@ import base64
 from dataclasses import dataclass
 import json
 import logging
+import os
 from typing import Optional
 
 import websockets
@@ -646,6 +647,14 @@ async def on_startup():
 @app.get("/health")
 async def health():
     return {"status": "ok"}
+
+@app.get("/version")
+async def version():
+    # Railway injects these at build/runtime; "unknown" when run locally.
+    return {
+        "commit": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown"),
+        "branch": os.getenv("RAILWAY_GIT_BRANCH", "unknown"),
+    }
 
 @app.get("/media-stream")
 async def media_stream_probe():
