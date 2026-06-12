@@ -7,12 +7,17 @@
 - [ ] Owner confirms Railway deploy of a2f0585 (A-001)
 - [ ] /version endpoint returning git SHA (tiny code change; ships with P1 merge so deploys are self-verifiable)
 
-## P1 — core/vertical split (branch p1/core-vertical-split)
-- [x] Golden behavior snapshots recorded from pre-refactor code
+## P1 — core/vertical split (branch p1/core-vertical-split @ c1aa2fa)
+- [x] Golden behavior snapshots recorded from pre-refactor code (fb0e720)
 - [x] core/ engine (industry-agnostic) + verticals/plumbing.json
-- [x] Regression: golden equivalence + scripted media-stream test + no-vertical-leakage check
+- [x] Regression: 11/11 — golden equivalence + scripted media-stream test + no-vertical-leakage check (D-006)
 - [ ] Owner reviews acceptance evidence → approves merge to main (A-002)
 - [ ] Post-merge: Railway deploy green + one live call on plumber line confirming unchanged behavior
+
+## New (from D-005 discovery)
+- [ ] A-001 expanded: owner identifies which branch Railway deploys
+- [ ] Mine legacy-snapshot (phase-1a branch) test suite + admin/storage code as reference for P2+ multi-tenant rebuild
+- [ ] Owner decision eventually: fate of phase-1a-stability-guardrails branch (supersede via new core/vertical architecture?)
 
 ## P2 — shoreline vertical (blocked on owner)
 - [ ] verticals/shoreline.json per contract §1.2 (config can be drafted ahead)

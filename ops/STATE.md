@@ -1,9 +1,12 @@
 # STATE
 
-Updated: 2026-06-11 (session 2)
+Updated: 2026-06-11 (session 2, end)
 
 ## Phase
-P0 housekeeping (this session) → P1 core/vertical refactor (in progress on branch `p1/core-vertical-split`).
+P0 housekeeping DONE. P1 core/vertical split CODE-COMPLETE on branch `p1/core-vertical-split` @ c1aa2fa with 11/11 regression evidence (D-006). Awaiting owner: A-001 (Railway source check) and A-002 (merge approval). Repo working tree is left checked out on the P1 branch for review.
+
+## Key discovery this session (D-005)
+`legacy-snapshot/` at repo root = parked multi-tenant variant (Postgres, admin pages) on unmerged branch `phase-1a-stability-guardrails` of the same GitHub repo. Explains the charter's "tenant config in Postgres". GitHub main = the simple single-file app. Which branch Railway deploys is unknown → A-001. legacy-snapshot contains live secrets; now gitignored, never to be committed.
 
 ## Live system (verified facts)
 - One live tenant: plumber line. Single-tenant FastAPI app (`main.py`) on Railway at `ai-plumber-receptionist-production.up.railway.app`. `/health` returned ok on 2026-06-11.
