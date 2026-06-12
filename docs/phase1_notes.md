@@ -1,0 +1,74 @@
+# Phase 1 Notes
+
+Phase 1 is about adding stability guardrails around the existing AI plumber receptionist demo while keeping the current call behavior reviewable and easy to roll back.
+
+## Completed Phase 1 / Milestone 1 Scope
+
+- Add project-level agent rules in `AGENTS.md`.
+- Document Phase 1 boundaries and review questions in this file.
+- Add lightweight settings loading with the existing hard-coded `HOST` and `OAI_URL` values preserved as fallbacks.
+- Add lead validation and wire it into `submit_service_request`.
+- Fix the narrow SMS result bug where failed SMS delivery was still reported to OpenAI as `success=true`.
+- Add tests that do not call Twilio, OpenAI, or require real `.env` values.
+- Add durable single-tenant call, lead, notification, and call event persistence.
+- Add minimal internal admin pages protected by `ADMIN_PASSWORD`.
+
+## Current Non-Goals
+
+- No prompt or persona changes.
+- No full SaaS multi-tenant architecture beyond Milestone 2 lite routing/settings.
+- No manual deployment or merge; Railway may auto-deploy the configured dev branch after push.
+- No live phone test.
+- No large `main.py` refactor.
+- No Twilio/OpenAI realtime event loop rewrite.
+- No barge-in overhaul.
+- No OpenAI `session.update` schema redesign.
+- No SMS template or recipient changes.
+- No retry worker or SaaS admin UI.
+
+## Future Candidates
+
+- Add safer config validation for missing production environment variables.
+- Add a retry worker for failed notifications.
+- Add stronger caller transcript provenance if OpenAI input transcription is unavailable or incomplete on real calls.
+- Add structured logging around lead completion and notification results.
+- Add a small manual test checklist for Twilio Media Streams and OpenAI Realtime.
+- Investigate a Python 3.13-safe replacement for `audioop`.
+- Add full SaaS user login, billing, CRM, and prompt versioning only after multi-tenant lite is validated.
+
+## Manual Review Questions
+
+- Should `HOST` and `OAI_URL` be fully environment-driven in production, with startup failure if missing?
+- Should failed SMS delivery trigger a retry worker or a separate alert channel?
+- What is the acceptable behavior when OpenAI calls `submit_service_request` with an incomplete or placeholder address?
+- Should backend validation require caller transcript support for every submitted name, including full names, after more real-call transcript samples are available?
+
+## Current Hotfix Note
+
+Name validation now uses caller transcript text when OpenAI provides it. If transcript text exists, the submitted name must be supported by what the caller said. If no transcript is available, first-name-only submissions are accepted and a `name_provenance_unverified` event is recorded, so callers are not forced to provide a last name.
+
+## Milestone 2 Note
+
+Multi-tenant lite adds tenants, tenant phone numbers, tenant settings, tenant-scoped calls/leads/notifications/events, tenant-specific SMS recipients, and simple `/admin/tenants` management. Startup migration is additive: it creates new tenant tables, adds nullable `tenant_id` columns to existing Milestone 1 tables if needed, and backfills existing data to the default tenant.
+
+## Milestone 4B Intake Policy Hotfix Note
+
+Tenant intake policy now uses explicit `collection_mode` values: `required`, `ask_once`, and `passive`. Existing JSON questions without `collection_mode` are interpreted safely: `required=true` maps to `required`, and `required=false` maps to `ask_once`. New admin-created questions default to `ask_once`, so the AI must ask them before submit; callers can still answer `declined` or `unknown` and continue.
+
+Follow-up hotfix: `ask_once` no longer accepts AI-filled `unknown` or `declined` unless the call/session has evidence that the AI asked the pending question and the caller responded after it. This keeps ask-once flexible for callers while blocking silent skips.
+
+Default final notes add-on: tenants now get an active `additional_notes` ask-once field by default, using the question "Anything else the plumber should know before I send this over?" It is asked last before submit and can capture access notes, gate codes, pets, availability, or other context.
+
+## Future Milestone Candidate: Conversation Experience / Turn-Taking Polish
+
+Deeper conversation pacing is intentionally postponed. Future work can cover no immediate reprompt after the first question, one decision-point per turn, better barge-in handling, silence timeout tuning, post-closing courtesy response, and Twilio `clear`/`mark` plus OpenAI `response.cancel` improvements if needed.
+
+## Conversation Polish Backlog
+
+1. If the caller already gave their name, do not ask "What is your name?" again. Prefer: "I heard Sam for the name, right?"
+2. If the caller says "this number is good" and caller phone is known, do not ask for callback again. Prefer a short acknowledgement: "Okay, we'll use this number."
+3. Avoid awkward double-confirmations such as: "What is your name? I caught your name is Sam, right?"
+4. Keep one-shot info dump support: if caller gives name, issue, urgency, address, callback, property role, and notes all at once, extract them and ask only genuinely missing or unclear fields.
+5. Later milestone: Conversation Experience / Naturalness Polish.
+
+Typo note: code/default seed data currently uses "Homeowner or renter"; no "Homowner or renter" source string was found in the repo. If production admin still shows the typo, it is likely stored admin-entered policy data and should be edited in the tenant intake policy page.

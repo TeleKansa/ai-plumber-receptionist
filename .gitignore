@@ -3,6 +3,7 @@
 
 # Python
 __pycache__/
+*.pyc
 *.py[cod]
 *$py.class
 *.so
@@ -30,5 +31,9 @@ Thumbs.db
 
 # Logs
 *.log
+
+# Local database fallback
+local_dev.db
+local_dev.db-*
 legacy-snapshot/
 .git/*.stale*
