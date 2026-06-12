@@ -1,7 +1,8 @@
 # Approval Queue
 
-## A-003 — OPEN — Consolidation plan (ops/CONSOLIDATION_PLAN.md)
-Approve/modify the A→B→C plan: tag archives → push ops-only main → `consolidation` branch from phase-1a tip + merge main into it → byte-identity gate → owner repoints Railway Source to main at a chosen low-call window → verification call → phase-1a frozen as rollback. Decisions needed from owner: (1) approve plan as written or with changes; (2) pick the cutover window; (3) confirm owner executes the Railway Source repoint personally.
+## A-003 — APPROVED 2026-06-11 (D-009); Phase A COMPLETE (D-010) — two items pending for Phase B
+1. **A5 merge approval:** consolidation @ 85d5294 → main. Gate evidence in D-010 (0-byte code diff vs production tip; 137/137 tests; boot ok). Inert until the Railway repoint.
+2. **Cutover day (weekday, after 21:00 CDT, this week):** needs call-pattern data. Operator has no Railway log access. Either (a) owner reads Railway → service → Observability/Logs, filters "Incoming call" lines for the past 7 days and reports the evening pattern, or (b) owner provides a read-scoped Railway project token and operator does it. Then we fix the day; owner clicks the Source change live with operator directing; operator owns deploy-green + verification call + transcript.
 
 ## CLOSED / WITHDRAWN
 - A-001 — CLOSED 2026-06-11: owner confirmed via dashboard — production deploys `phase-1a-stability-guardrails` (auto-deploy ON), Postgres Online, active deploy May 21; main push triggered nothing.

@@ -32,3 +32,15 @@ Rulings: (1) Postgres tenant config confirmed real; config-as-code applies in fu
 
 ## D-009 — 2026-06-11 — A-003 APPROVED; Phase B/C arrangements fixed
 Owner approved CONSOLIDATION_PLAN as written. Phase A executes now; completion criteria exactly as planned (byte-identity diff vs production tip + branch test suite green in sandbox), evidence to DECISIONS, then STOP and wait. Phase B window: a weekday evening this week after 21:00 CDT — specific day to be chosen from call-pattern data in the Phase A report; owner personally clicks the Railway Source change; operator directs in real time and owns post-cutover green-light confirmation + verification call + transcript archiving. Phase C as planned: phase-1a frozen 2 weeks as rollback insurance; /version endpoint and call-metrics logging are the first two changes under the new protocol; only then the real prompt_builder refactor. Owner also credited the D-008 self-invalidation — honest corrections are expected behavior.
+
+## D-010 — 2026-06-11 — Phase A COMPLETE; evidence; STOPPED awaiting owner
+- A1: tags pushed — `archive/single-file-app` @ a2f0585, `archive/p1-split-of-single-file-app` @ c1aa2fa.
+- A2: ops-only main pushed, origin/main a2f0585 → b8bf63b (4 ops commits; zero code).
+- A3: branch `consolidation` @ 85d5294 = merge of main into production tip 77b5537. Only conflict: .gitignore → resolved by union (keeps .env + legacy-snapshot/ exclusions). Merge performed in a /tmp clone to avoid the mount's deletion restrictions, then pushed back.
+- A4 GATE PASSED, evidence:
+  (1) Byte-identity: `git diff 77b5537..consolidation -- '*.py' main.py requirements.txt Procfile railway.json .python-version .env.example README.md AGENTS.md admin/ storage/ workflow/ scripts/ tests/ docs/ config/settings.py` → **0 bytes**. Full delta = 14 files, +399 lines: 13 docs/ops files added + .gitignore union. The cutover will deploy byte-identical code.
+  (2) Branch's own test suite in sandbox: **137 passed, 0 failed, 0 skipped** (tests run against their own fixtures; no live Postgres required).
+  (3) Boot check: app imports with dummy env; 33 routes (/voice, /media-stream, /health + 26 admin routes).
+  (4) Env-var audit from config/settings.py (15 names): OPENAI_API_KEY, TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_PHONE_NUMBER, PLUMBER_PHONE_NUMBER, DATABASE_URL, ADMIN_PASSWORD, HOST, PUBLIC_HOST, OAI_URL, OPENAI_REALTIME_MODEL, OPENAI_REALTIME_URL, DEFAULT_TENANT_GREETING, DEFAULT_TENANT_NAME, DEFAULT_TENANT_SLUG. All service-level in Railway — unaffected by a Source-branch change.
+- Push verification (ls-remote): consolidation 85d5294, main b8bf63b, **phase-1a-stability-guardrails UNCHANGED at 77b5537**. No push ever targeted the production branch.
+- STOPPED per D-009. Pending owner: (a) merge consolidation→main approval (A-003 step A5) — can be batched with the cutover-day decision; (b) cutover-day choice needs call-pattern data — operator has NO Railway log access (no token); owner must either read the week's /voice log timestamps from Railway Observability himself or provide a read-scoped project token (request logged in APPROVAL_QUEUE).
