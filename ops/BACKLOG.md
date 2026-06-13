@@ -6,12 +6,12 @@
 - [ ] Phase C: freeze phase-1a; owner archives legacy-snapshot .env then deletes folder
 
 ## P0 continuation (after cutover)
-- [ ] /version endpoint returning git SHA — first protocol-following change on the new main; scripted-test verified
+- [x] /version endpoint returning git SHA — DEPLOYED & verified 2026-06-12 (main@74e5dbe; full suite 139/139; GET /version returns deployed SHA; D-013)
 - [ ] Re-export REAL tenant config from Postgres → /config/tenants/ (charter config-as-code; needs DB access route — likely via admin UI or a read-only script run, TBD with owner)
 - [ ] INFRASTRUCTURE.md: add Postgres service details + env var names from config/settings.py
 
 ## P1 (after cutover) — redo against production codebase
-- [ ] Call-outcome metrics logging (approved, D-007 ruling 3)
+- [ ] **NEXT (Phase C #2):** call-outcome metrics read path — scope against storage/repository.py (DB already records calls/leads/events); approved D-007 ruling 3
 - [ ] Contract §1.1 core/vertical split targeting workflow/prompt_builder.py — reuse session-2 methodology: golden recording → scripted media-stream harness → byte-identity regression → leakage tests (branch p1/core-vertical-split @ c1aa2fa kept as reference)
 - [ ] Build the real test path: separate Railway test service + test number (number purchase batched — see APPROVAL_QUEUE)
 

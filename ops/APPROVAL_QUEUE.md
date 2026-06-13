@@ -1,9 +1,10 @@
 # Approval Queue
 
-## A-004 — OPEN — One production push: ops docs + /version endpoint
-First deploy under the new protocol. Contents: all local ops commits (docs only) + /version endpoint (reads Railway-injected RAILWAY_GIT_COMMIT_SHA; no new deps). Evidence: full test suite + new endpoint test green in sandbox (see D-012 when logged). Effect of approval: I push main once → Railway redeploys production (code change = /version only). Decide also (optional, recommended): set Railway → Service → Settings → Build → Watch paths to exclude `ops/**` and `*.md` so future docs-only pushes don't trigger deploys.
+## OPEN
+- (none)
 
 ## CLOSED
+- A-004 — CLOSED 2026-06-12: ops docs + /version pushed (main@74e5dbe); Railway Watch Paths set to exclude ops/** and *.md; /version externally verified returning the deployed SHA (D-013).
 - A-003 — COMPLETE 2026-06-12: consolidation executed (D-010), cutover verified end-to-end (D-011). phase-1a frozen until 2026-06-26.
 - A-001 — CLOSED (D-007). A-002 — WITHDRAWN (D-008).
 
@@ -17,7 +18,7 @@ First deploy under the new protocol. Contents: all local ops commits (docs only)
 - Shoreline consent script + greeting/identity script approval (queued for owner review before shoreline go-live)
 
 ## Standing flags
-- LIVE WIRE: no push to phase-1a-stability-guardrails, ever, without protocol + per-change owner approval. After cutover, the same rule applies to main.
+- LIVE WIRE: no push to phase-1a-stability-guardrails, ever, without protocol + per-change owner approval. The same rule applies to main (production). Docs-only pushes (ops/**, *.md) are now deploy-inert via Railway Watch Paths (D-013); any push touching code still requires full protocol + per-change approval.
 - Recording: OFF everywhere; never enable without approval + disclosure line (FL two-party consent relevant).
 - Spend alert threshold: flag if projected monthly OpenAI usage > $50.
 - Only-a-real-call-can-verify queue (D-007 ruling 2): post-cutover verification call (A-003 B3); eventual plumber-line regression call after the §1.1 refactor redo lands.

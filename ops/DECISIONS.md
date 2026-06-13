@@ -53,3 +53,18 @@ LIVE WIRE TRANSFERRED: main is now production. No push to main without protocol 
 
 ## D-012 — 2026-06-12 — Phase C change #1 ready: /version endpoint (awaiting A-004)
 Branch `change/version-endpoint` @ 1b54a42 (pushed; deploy-inert). Diff: +9 lines main.py (adds `import os` + GET /version returning Railway-injected RAILWAY_GIT_COMMIT_SHA/RAILWAY_GIT_BRANCH, "unknown" fallback; no new dependencies, no startup/DB involvement) + new tests/test_version.py. Scripted verification: full suite 139 passed (137 pre-existing + 2 new), 0 failed. Deploy plan on A-004 approval: merge to main + single push (also carries local ops commits) → Railway redeploys → verify /version returns the pushed SHA from outside — first externally self-verifiable deploy. Change #2 (call-metrics read path) to be scoped next session against storage/repository.py. After both: core/vertical refactor of workflow/prompt_builder.py; shoreline vertical = first client (owner directive 2026-06-12).
+
+## D-013 — 2026-06-12 — Phase C change #1 DEPLOYED & verified: /version endpoint live (A-004 executed)
+Owner approved A-004 and set Railway **Watch Paths** (operator-provided value, verified against Railway build-configuration docs) so docs no longer trigger deploys:
+```
+**
+!/ops/**
+!/**/*.md
+```
+Order per owner: watch paths set FIRST, then push — so this and all future docs-only changes don't disturb the live line.
+- **Pre-push verification** (isolated /tmp clone; deploy-inert): merged origin/change/version-endpoint → main = `74e5dbe`. Code delta vs deployed tip ac687be = `main.py` +9 (the /version route: returns RAILWAY_GIT_COMMIT_SHA/RAILWAY_GIT_BRANCH with "unknown" fallback; no new deps, no DB, no startup hook) + `tests/test_version.py` only — rest is docs. Full suite **139 passed / 0 failed** (Python 3.10, dummy env, SQLite fallback); boot check 39 routes incl. /version, /voice, /media-stream. One transient suite failure (test_tenant_pages_render) was isolated to a harness artifact (operator's DEFAULT_TENANT_NAME=Test env override) — reproduced IDENTICALLY on deployed tip ac687be, proving /version was not the cause; re-ran with the var unset → 139/139.
+- **Push**: `ac687be..74e5dbe` → origin/main (exit 0). `phase-1a-stability-guardrails` re-verified UNCHANGED at 77b5537 before and after.
+- **Deploy**: Railway auto-built main; owner confirmed top deployment ACTIVE + "Deployment successful", titled "Phase C #1: merge /version endpoint into main (A-004; D-012)".
+- **External self-verification**: `GET /version` → `{"commit":"74e5dbe7255e37da3548cc09a604bcd77b64edc4","branch":"main"}` — exact match to pushed SHA. First externally self-verifiable deploy. `/health` returned `{"status":"ok"}` on every probe across the instance swap — no observed downtime. (Verification artifact: a per-URL response cache served a stale empty 404 for /version until a cache-busting query param was used — not a deploy issue.)
+- **A-004 CLOSED.** Deploy evidence complete per Verification Protocol.
+LIVE WIRE unchanged: main is production; no code push without protocol + per-change owner approval. Docs-only pushes now deploy-inert via Watch Paths (the ops commit carrying this entry is the first such push; ACTIVE deploy SHA must remain 74e5dbe — confirmed in session).
