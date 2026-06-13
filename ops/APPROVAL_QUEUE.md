@@ -1,9 +1,10 @@
 # Approval Queue
 
 ## OPEN
-- A-005 — Deploy Phase C #2: merge `change/metrics-json` → main (adds read-only `GET /admin/metrics.json`). Built + verified on branch @ 4e2ccba: full suite 142/142, endpoint returns charter metrics + derived rates, 401 without admin auth, no schema/call-path change, no new deps (D-014). Effect of approval: I merge to main + one push → Railway redeploys production (adds the read-only admin JSON route only). After: verify GET /version returns the new SHA + GET /admin/metrics.json returns 200 (admin-auth).
+- (none)
 
 ## CLOSED
+- A-005 — CLOSED 2026-06-12: metrics.json merged → main (7a9c3df); deployed; /version externally verified = merge SHA; route admin-auth gated (D-015).
 - A-004 — CLOSED 2026-06-12: ops docs + /version pushed (main@74e5dbe); Railway Watch Paths set to exclude ops/** and *.md; /version externally verified returning the deployed SHA (D-013).
 - A-003 — COMPLETE 2026-06-12: consolidation executed (D-010), cutover verified end-to-end (D-011). phase-1a frozen until 2026-06-26.
 - A-001 — CLOSED (D-007). A-002 — WITHDRAWN (D-008).

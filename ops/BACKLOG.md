@@ -1,9 +1,13 @@
 # Backlog
 
-## NOW — consolidation (blocked on A-003 owner decision)
-- [ ] Phase A: archive tags, push ops main, consolidation branch, merge docs in, byte-identity gate, run phase-1a test suite in sandbox
-- [ ] Phase B: owner repoints Railway → main (cutover window TBD), verification call, transcript logged
-- [ ] Phase C: freeze phase-1a; owner archives legacy-snapshot .env then deletes folder
+## NOW — 🎯 SHORELINE CRITICAL PATH (the priority; STATE.md has the 6-step countdown)
+Consolidation + cutover DONE (D-010/D-011); Phase C #1 /version + #2 metrics DEPLOYED (D-013/D-015). Priority now = make the shoreline vertical usable so it can take a real homeowner call. Owner directive 2026-06-12: minimal-scope refactor; defer all nice-to-haves.
+- [ ] Step 1: prompt_builder core/vertical refactor (plumbing preserved, regression-clean; scope = shoreline-only needs)
+- [ ] Step 2: verticals/shoreline.json per contract §1.2
+- [ ] Step 3: shoreline lead delivery (webhook + email/sheet fallback, §3–4)
+- [ ] Step 4 (OWNER, gating): shoreline Twilio number + consent/greeting approvals + webhook host
+- [ ] Step 5: provision shoreline tenant + number routing; scripted + live test call, transcript logged
+- [ ] Step 6: go live → first real homeowner call
 
 ## P0 continuation (after cutover)
 - [x] /version endpoint returning git SHA — DEPLOYED & verified 2026-06-12 (main@74e5dbe; full suite 139/139; GET /version returns deployed SHA; D-013)
@@ -11,8 +15,8 @@
 - [ ] INFRASTRUCTURE.md: add Postgres service details + env var names from config/settings.py
 
 ## P1 (after cutover) — redo against production codebase
-- [~] **Phase C #2 BUILT (awaiting A-005 deploy):** read-only GET /admin/metrics.json on branch change/metrics-json @ 4e2ccba; full suite 142/142; reuses pilot_metrics + derived rates (qualification %, SMS delivery %, missed-lead count, per-tenant); approved scope D-007 ruling 3 / D-014
-- [ ] Contract §1.1 core/vertical split targeting workflow/prompt_builder.py — reuse session-2 methodology: golden recording → scripted media-stream harness → byte-identity regression → leakage tests (branch p1/core-vertical-split @ c1aa2fa kept as reference)
+- [x] **Phase C #2 DEPLOYED 2026-06-12:** GET /admin/metrics.json live (main@7a9c3df; 142/142; reuses pilot_metrics + derived rates; D-015)
+- [ ] **PRIORITY — Phase C #3 = shoreline critical-path step 1:** core/vertical split of workflow/prompt_builder.py, MINIMAL scope to enable verticals/shoreline.json; plumbing preserved exactly (golden recording → scripted media-stream harness → byte-identity regression → leakage tests; methodology from c1aa2fa). Defer nice-to-haves per owner directive.
 - [ ] Build the real test path: separate Railway test service + test number (number purchase batched — see APPROVAL_QUEUE)
 
 ## P2 — shoreline vertical (blocked on owner Twilio errand + scripts)
