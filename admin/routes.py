@@ -1,10 +1,11 @@
 import json
 import re
+from datetime import datetime, timezone
 from html import escape
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from admin.auth import check_admin_credentials
@@ -728,6 +729,49 @@ def create_admin_router(settings: Settings) -> APIRouter:
             ]
         )
         return _page("Pilot Metrics", body)
+
+    @router.get("/admin/metrics.json", response_class=JSONResponse)
+    async def admin_metrics_json(tenant_id: str = "", demo_filter: str = "all"):
+        """Read-only machine-readable metrics for the weekly report (Phase C #2, A-005).
+
+        Reuses the already-tested repository.pilot_metrics and adds the charter's
+        derived rates. No schema change, no call-path involvement — read-only.
+        """
+        parsed_tenant_id = _parse_optional_int(tenant_id)
+        metrics = repository.pilot_metrics(tenant_id=parsed_tenant_id, demo_filter=demo_filter)
+
+        def _rate(numerator: int, denominator: int):
+            return round(numerator / denominator, 4) if denominator else None
+
+        total_calls = metrics.get("total_calls", 0) or 0
+        calls_with_leads = metrics.get("calls_with_leads", 0) or 0
+        sms_sent = metrics.get("sms_sent", 0) or 0
+        sms_failed = metrics.get("sms_failed", 0) or 0
+
+        by_tenant = []
+        for row in metrics.get("by_tenant") or []:
+            tenant_calls = row.get("calls", 0) or 0
+            tenant_leads = row.get("leads", 0) or 0
+            by_tenant.append({
+                **row,
+                "qualification_completion_rate": _rate(tenant_leads, tenant_calls),
+            })
+
+        return JSONResponse({
+            "generated_at": datetime.now(timezone.utc).isoformat(),
+            "filters": {"tenant_id": parsed_tenant_id, "demo_filter": demo_filter},
+            "calls_answered": total_calls,
+            "calls_with_leads": calls_with_leads,
+            "calls_without_leads": metrics.get("calls_without_leads", 0),
+            "qualification_completion_rate": _rate(calls_with_leads, total_calls),
+            "sms_sent": sms_sent,
+            "sms_failed": sms_failed,
+            "sms_delivery_rate": _rate(sms_sent, sms_sent + sms_failed),
+            "emergency_leads": metrics.get("emergency_leads", 0),
+            "unreviewed_calls": metrics.get("unreviewed_calls", 0),
+            "bad_or_needs_review_calls": metrics.get("bad_or_needs_review_calls", 0),
+            "by_tenant": by_tenant,
+        })
 
     @router.get("/admin/tenants", response_class=HTMLResponse)
     async def admin_tenants():
