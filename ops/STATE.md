@@ -14,7 +14,7 @@ CONSOLIDATION COMPLETE. Phase B closed 2026-06-12: cutover verified end-to-end (
 
 ## 🎯 SHORELINE FIRST LIVE CALL — critical path (THE priority; open every report with this step count)
 Goal: a real Cape Coral homeowner calls the shoreline number → answered as "Shoreline Cost" → qualified → lead delivered within SLA. **6 steps remaining:**
-1. prompt_builder core/vertical refactor — core engine + vertical config packages; plumbing preserved exactly (regression-clean via golden harness). Scope = shoreline-only needs. [operator]
+1. prompt_builder core/vertical refactor — core engine + vertical config packages; plumbing preserved exactly (regression-clean via golden harness). Scope = shoreline-only needs. [operator] — **IN PROGRESS:** golden baseline locked (branch change/core-vertical-split @ 2040765; suite 143/143; D-017). Next = design + the split.
 2. verticals/shoreline.json — author per contract §1.2 (greeting, identity, 8 qualification Qs, urgency, consent verbatim, transfer, disqualify). [operator; consent + greeting wording need owner sign-off = step 4]
 3. shoreline lead delivery — webhook primary + email/sheet fallback, lead schema §3, 5-min SLA. [operator]
 4. OWNER one-time errand (GATING): buy shoreline Twilio number; approve consent script (legal-adjacent); approve greeting/identity script; confirm webhook hosting. [owner — currently deferred = the real bottleneck]

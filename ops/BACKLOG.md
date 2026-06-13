@@ -2,7 +2,7 @@
 
 ## NOW — 🎯 SHORELINE CRITICAL PATH (the priority; STATE.md has the 6-step countdown)
 Consolidation + cutover DONE (D-010/D-011); Phase C #1 /version + #2 metrics DEPLOYED (D-013/D-015). Priority now = make the shoreline vertical usable so it can take a real homeowner call. Owner directive 2026-06-12: minimal-scope refactor; defer all nice-to-haves.
-- [ ] Step 1: prompt_builder core/vertical refactor (plumbing preserved, regression-clean; scope = shoreline-only needs)
+- [~] Step 1: prompt_builder core/vertical refactor (plumbing preserved, regression-clean) — golden baseline locked on branch change/core-vertical-split @ 2040765; next = design + the split (D-017)
 - [ ] Step 2: verticals/shoreline.json per contract §1.2
 - [ ] Step 3: shoreline lead delivery (webhook + email/sheet fallback, §3–4)
 - [ ] Step 4 (OWNER, gating): shoreline Twilio number + consent/greeting approvals + webhook host
