@@ -1,7 +1,7 @@
 # Approval Queue
 
 ## OPEN
-- (none)
+- A-006 — Approve shoreline scripts + recording decision (legal-adjacent; critical-path step 4). Draft: `config/tenants/shoreline_scripts_DRAFT.md`. Need from owner: (1) greeting Option A or B, (2) identity lines, (3) consent wording (verbatim contract §1.2), (4) recording yes/no. Recording stays OFF until explicit yes + disclosure line live. Recommend counsel review of consent + recording wording before go-live. After this, the only remaining step-4 item is buying the shoreline Twilio number (owner errand).
 
 ## CLOSED
 - A-005 — CLOSED 2026-06-12: metrics.json merged → main (7a9c3df); deployed; /version externally verified = merge SHA; route admin-auth gated (D-015).
