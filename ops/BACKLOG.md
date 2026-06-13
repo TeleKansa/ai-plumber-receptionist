@@ -11,7 +11,7 @@
 - [ ] INFRASTRUCTURE.md: add Postgres service details + env var names from config/settings.py
 
 ## P1 (after cutover) — redo against production codebase
-- [ ] **NEXT (Phase C #2):** call-outcome metrics read path — scope against storage/repository.py (DB already records calls/leads/events); approved D-007 ruling 3
+- [~] **Phase C #2 BUILT (awaiting A-005 deploy):** read-only GET /admin/metrics.json on branch change/metrics-json @ 4e2ccba; full suite 142/142; reuses pilot_metrics + derived rates (qualification %, SMS delivery %, missed-lead count, per-tenant); approved scope D-007 ruling 3 / D-014
 - [ ] Contract §1.1 core/vertical split targeting workflow/prompt_builder.py — reuse session-2 methodology: golden recording → scripted media-stream harness → byte-identity regression → leakage tests (branch p1/core-vertical-split @ c1aa2fa kept as reference)
 - [ ] Build the real test path: separate Railway test service + test number (number purchase batched — see APPROVAL_QUEUE)
 

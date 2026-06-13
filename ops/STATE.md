@@ -9,7 +9,7 @@ Railway production deploys GitHub **main** (since cutover 2026-06-12 ~04:45 UTC)
 CONSOLIDATION COMPLETE. Phase B closed 2026-06-12: cutover verified end-to-end (answered → qualified → lead SMS delivered in seconds; transcript archived in ops/transcripts/). Phase C in effect:
 - phase-1a-stability-guardrails FROZEN as rollback until **2026-06-26**; then archive-tag + delete (owner call).
 - Change #1 under new protocol: /version endpoint — **DEPLOYED & verified 2026-06-12** (main@74e5dbe; GET /version returns the deployed SHA; D-013). DONE.
-- Change #2 (NEXT): call-metrics read path (DB already records calls/leads/events via storage/repository.py — scope this against it).
+- Change #2: call-metrics read path — **BUILT & verified on branch change/metrics-json @ 4e2ccba (suite 142/142); awaiting A-005 to deploy** (D-014). Read-only GET /admin/metrics.json reusing pilot_metrics + charter-derived rates.
 - Then: core/vertical refactor of workflow/prompt_builder.py; shoreline vertical is its first client. Twilio number + consent/greeting scripts remain deferred (owner).
 
 ## Production truth
