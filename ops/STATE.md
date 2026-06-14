@@ -1,6 +1,6 @@
 # STATE
 
-Updated: 2026-06-12 (session 5 — Phase C #1 /version + #2 metrics DEPLOYED; shoreline-first priority pivot)
+Updated: 2026-06-12 (session 5 — Phase C #1/#2/#3 DEPLOYED; core/vertical split live; shoreline now config-only)
 
 ## ⚠️ LIVE WIRE = main
 Railway production deploys GitHub **main** (since cutover 2026-06-12 ~04:45 UTC). Any push to main that touches CODE = production deploy → requires scripted verification + per-change owner approval. **Watch Paths now set (D-013): a push touching only `ops/**` and `*.md` is deploy-inert** — ops/docs commits can be pushed without disturbing the live line. Code pushes still go through full protocol.
@@ -13,8 +13,8 @@ CONSOLIDATION COMPLETE. Phase B closed 2026-06-12: cutover verified end-to-end (
 - Change #3 (NOW — the priority): core/vertical refactor of workflow/prompt_builder.py aimed STRAIGHT at a usable shoreline vertical (owner directive). Minimal scope — only what shoreline needs; plumbing preserved exactly. Nice-to-have internal work deprioritized.
 
 ## 🎯 SHORELINE FIRST LIVE CALL — critical path (THE priority; open every report with this step count)
-Goal: a real Cape Coral homeowner calls the shoreline number → answered as "Shoreline Cost" → qualified → lead delivered within SLA. **6 steps remaining:**
-1. prompt_builder core/vertical refactor — core engine + vertical config packages; plumbing preserved exactly. [operator] — **DONE & verified on branch change/core-vertical-split @ e5125b6** (byte-identical golden + leakage guard; suite 144/144; D-018). Awaiting **A-007** deploy + a plumber-line regression test call. After deploy, shoreline = config only.
+Goal: a real Cape Coral homeowner calls the shoreline number → answered as "Shoreline Cost" → qualified → lead delivered within SLA. **5 steps remaining (step 1 ✅ deployed):**
+1. ✅ **DEPLOYED 2026-06-12** — prompt_builder core/vertical split live (main@ac1f051; /version verified; plumber output byte-identical; D-019). Pending: one plumber-line regression test call (owner). Shoreline is now config-only.
 2. verticals/shoreline.json — author per contract §1.2 (greeting, identity, 8 qualification Qs, urgency, consent verbatim, transfer, disqualify). [operator; consent + greeting wording need owner sign-off = step 4]
 3. shoreline lead delivery — webhook primary + email/sheet fallback, lead schema §3, 5-min SLA. [operator]
 4. OWNER one-time errand (GATING): buy shoreline Twilio number; approve consent script (legal-adjacent); approve greeting/identity script; confirm webhook hosting. [owner — currently deferred = the real bottleneck]
@@ -23,7 +23,7 @@ Goal: a real Cape Coral homeowner calls the shoreline number → answered as "Sh
 Operator can do 1–3 and the software of 5 without the number; the FIRST REAL CALL is gated on owner step 4. Do NOT pursue until shoreline is live: more metrics, more self-verification endpoints, weekly-report automation.
 
 ## Production truth
-- One branch: main @ 7a9c3df = multi-tenant code (byte-identical to old phase-1a tip 77b5537) + charter/ops + /version (#1) + /admin/metrics.json (#2). Deployed SHA externally confirmable via GET /version (=7a9c3df).
+- One branch: main @ ac1f051 = multi-tenant code (plumber behavior byte-identical to old phase-1a tip 77b5537) + charter/ops + /version (#1) + /admin/metrics.json (#2) + core/vertical split (#3). Deployed SHA externally confirmable via GET /version (=ac1f051).
 - Live build facts from verification call: tenant_id=1 (plumber), model gpt-realtime-2 (env/tenant-config driven), reasoning_effort=low, extra intake fields (property_role, additional_notes), leads delivered by SMS, calls/events recorded in Postgres.
 - Tags: archive/single-file-app @ a2f0585; archive/p1-split-of-single-file-app @ c1aa2fa.
 - legacy-snapshot/: zero unique work; owner to archive .env values then delete folder.

@@ -100,3 +100,10 @@ The prompt_builder refactor is done on branch `change/core-vertical-split` @ e51
 - Evidence: golden test byte-identical PASS; leakage guard PASS; **full suite 144 passed / 0 failed**. Process trap found + fixed: the working-folder main.py was stale (pre-/version, since /version was merged via a /tmp clone and never synced to the folder) — cp-ing it had regressed /version (test_version 404); restored main.py from git, re-applied the 2 edits, re-synced the corrected file to the folder. (Lesson: for code files that changed on origin, edit the git version, not the lagging working-folder copy.)
 - NOT merged to main; production untouched (main 722a290, phase-1a 77b5537 — re-verified). Deploy plan on A-007: merge → push → /version SHA check + a plumber-line regression test call (output is byte-identical, so live behavior should be unchanged — the call confirms it per protocol).
 This completes shoreline critical-path **STEP 1**. Next: STEP 2 = author verticals/shoreline.json on the same engine (some wording gated on A-006 script approval).
+
+## D-019 — 2026-06-12 — Phase C #3 core/vertical split DEPLOYED (A-007 executed)
+- Merge change/core-vertical-split → main = ac1f051; code delta vs prior main 4f81c81 = new core/ engine, verticals/plumbing.json, prompt_builder.py (263→~40 lines), main.py TOOLS, + golden/leakage tests. Full suite 144/144 on the merged tree.
+- Push 4f81c81..ac1f051 → origin/main (exit 0). phase-1a re-verified UNCHANGED at 77b5537 before/after.
+- External verification: `GET /version` → `{"commit":"ac1f051…","branch":"main"}` (exact merge SHA → deploy live); /health ok across the instance swap. Plumber prompt/tools/greeting are byte-identical to pre-deploy (golden), so live behavior is expected unchanged.
+- **OPEN follow-up (only-a-real-call-can-verify):** owner places ONE plumber-line regression test call; operator reviews the transcript to confirm live behavior unchanged. Until then this deploy is "live + code-verified; awaiting real-call confirmation."
+Shoreline critical-path **STEP 1 is DEPLOYED.** Next: STEP 2 = verticals/shoreline.json on the same engine (greeting/consent wording gated on A-006).
