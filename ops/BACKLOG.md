@@ -3,7 +3,7 @@
 ## NOW — 🎯 SHORELINE CRITICAL PATH (the priority; STATE.md has the 6-step countdown)
 Consolidation + cutover DONE (D-010/D-011); Phase C #1 /version + #2 metrics DEPLOYED (D-013/D-015). Priority now = make the shoreline vertical usable so it can take a real homeowner call. Owner directive 2026-06-12: minimal-scope refactor; defer all nice-to-haves.
 - [x] Step 1: core/vertical split ✅ DEPLOYED 2026-06-12 (main@ac1f051; /version verified; byte-identical; D-019). Pending one plumber-line regression test call (owner).
-- [ ] Step 2: verticals/shoreline.json per contract §1.2
+- [~] Step 2: verticals/shoreline.json DRAFTED (branch change/shoreline-vertical @ 70a467f; renders on engine; 144/144; D-020). Remaining: A-006 wording + tenant→vertical selection wiring (prompt_builder/main hardcode plumbing).
 - [ ] Step 3: shoreline lead delivery (webhook + email/sheet fallback, §3–4)
 - [ ] Step 4 (OWNER, gating): shoreline Twilio number + consent/greeting approvals + webhook host
 - [ ] Step 5: provision shoreline tenant + number routing; scripted + live test call, transcript logged
@@ -20,8 +20,9 @@ Consolidation + cutover DONE (D-010/D-011); Phase C #1 /version + #2 metrics DEP
 - [ ] Build the real test path: separate Railway test service + test number (number purchase batched — see APPROVAL_QUEUE)
 
 ## P2 — shoreline vertical (blocked on owner Twilio errand + scripts)
-- [ ] verticals/shoreline config per contract §1.2 (draftable ahead of time)
-- [ ] Lead delivery webhook + email/sheet fallback per contract §3–4
+- [~] verticals/shoreline.json DRAFTED @ 70a467f (D-020); pending A-006 wording + tenant→vertical selection wiring
+- [ ] tenant→vertical selection wiring (let a tenant/number choose its vertical; "plumbing" is hardcoded today) — required for shoreline to answer
+- [ ] Lead delivery webhook + email/sheet fallback per contract §3–4 (step 3)
 
 ## P3/P4 — not started
 - Demo tenant, onboarding template, pricing proposal, per-client metrics reports, missed-call alerting
