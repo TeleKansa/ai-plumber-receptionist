@@ -15,8 +15,8 @@ CONSOLIDATION COMPLETE. Phase B closed 2026-06-12: cutover verified end-to-end (
 ## 🎯 SHORELINE FIRST LIVE CALL — critical path (THE priority; open every report with this step count)
 Goal: a real Cape Coral homeowner calls the shoreline number → answered as "Shoreline Cost" → qualified → lead delivered within SLA. **5 steps remaining (step 1 ✅ deployed):**
 1. ✅ **DEPLOYED 2026-06-12** — prompt_builder core/vertical split live (main@ac1f051; /version verified; plumber output byte-identical; D-019). Pending: one plumber-line regression test call (owner). Shoreline is now config-only.
-2. verticals/shoreline.json — **DRAFTED on branch change/shoreline-vertical @ 70a467f** (renders on the shared engine; 144/144; D-020). Remaining to be usable: A-006 final wording + **tenant→vertical SELECTION wiring** (prompt_builder/main hardcode "plumbing" today). [operator]
-3. shoreline lead delivery — webhook primary + email/sheet fallback, lead schema §3, 5-min SLA. [operator]
+2. verticals/shoreline.json + tenant→vertical selection — **BUILT on branch change/shoreline-vertical @ dea2f5b** (renders on engine; shorelinecost→shoreline; plumber byte-identical; 148/148; D-020/D-021). Remaining: A-006 final wording. Deploy = A-008 (recommend batching with step 3). [operator]
+3. shoreline lead delivery (NEXT) — make the function-call handler + lead packaging vertical-aware (today only handles submit_service_request); deliver shoreline leads via webhook primary + email/sheet fallback per §3–4, 5-min SLA. [operator]
 4. OWNER one-time errand (GATING): buy shoreline Twilio number; approve consent script (legal-adjacent); approve greeting/identity script; confirm webhook hosting. [owner — currently deferred = the real bottleneck]
 5. provision + test: register shoreline tenant + route number → shoreline vertical; scripted media-stream test + one live test call on testing/allowed-test-caller path; transcript logged. [operator; live test needs #4]
 6. go live: flip shoreline tenant live → first real homeowner call end to end. [owner + real caller]
