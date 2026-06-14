@@ -29,8 +29,8 @@ from storage.database import init_db
 from storage import repository
 from workflow.notifications import SmsSendResult, build_sms_body as build_notification_sms_body
 from workflow.prompt_builder import DEFAULT_GREETING, PromptBuilder
-from core.engine import build_tools
-from core.vertical import load_vertical
+from core.engine import build_instructions, build_tools
+from core.vertical import load_vertical, resolve_vertical_name
 from workflow.realtime_config import (
     build_realtime_url,
     effective_realtime_model,
@@ -72,8 +72,20 @@ sessions: dict[str, dict] = {}
 prompt_builder = PromptBuilder()
 
 # ---------------------------------------------------------------------------
-# Prompt builder
+# Vertical selection (tenant → vertical). The default and per-slug binding live
+# here in the app entrypoint, NOT in core (core stays industry-agnostic).
+# Unknown / legacy tenants resolve to plumbing, so existing behavior is unchanged.
 # ---------------------------------------------------------------------------
+
+DEFAULT_VERTICAL = "plumbing"
+VERTICAL_BY_SLUG = {
+    "shorelinecost": "shoreline",
+}
+
+
+def _vertical_for(tenant: Optional[dict] = None) -> dict:
+    return load_vertical(resolve_vertical_name(tenant, DEFAULT_VERTICAL, VERTICAL_BY_SLUG))
+
 
 def make_instructions(
     caller_number: str,
@@ -81,14 +93,17 @@ def make_instructions(
     prompt_profile: Optional[dict] = None,
     intake_policy: Optional[dict] = None,
 ) -> str:
-    return prompt_builder.build(caller_number, tenant=tenant, profile=prompt_profile, intake_policy=intake_policy)
+    return build_instructions(
+        _vertical_for(tenant),
+        caller_number,
+        tenant=tenant,
+        profile=prompt_profile,
+        intake_policy=intake_policy,
+    )
 
 
-# ---------------------------------------------------------------------------
-# OpenAI function tool
-# ---------------------------------------------------------------------------
-
-TOOLS = build_tools(load_vertical("plumbing"))
+# Backwards-compatible default (plumbing) tool list.
+TOOLS = build_tools(load_vertical(DEFAULT_VERTICAL))
 
 
 def build_session_update(
@@ -98,10 +113,11 @@ def build_session_update(
     intake_policy: Optional[dict] = None,
     realtime_model: Optional[str] = None,
 ) -> dict:
+    vertical = _vertical_for(tenant)
     session = {
         "type":        "realtime",
-        "instructions": make_instructions(caller_number, tenant, prompt_profile, intake_policy),
-        "tools":       TOOLS,
+        "instructions": build_instructions(vertical, caller_number, tenant=tenant, profile=prompt_profile, intake_policy=intake_policy),
+        "tools":       build_tools(vertical),
         "tool_choice": "auto",
         **realtime_session_overrides(realtime_model),
     }
