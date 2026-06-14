@@ -29,6 +29,8 @@ from storage.database import init_db
 from storage import repository
 from workflow.notifications import SmsSendResult, build_sms_body as build_notification_sms_body
 from workflow.prompt_builder import DEFAULT_GREETING, PromptBuilder
+from core.engine import build_tools
+from core.vertical import load_vertical
 from workflow.realtime_config import (
     build_realtime_url,
     effective_realtime_model,
@@ -86,31 +88,7 @@ def make_instructions(
 # OpenAI function tool
 # ---------------------------------------------------------------------------
 
-TOOLS = [
-    {
-        "type": "function",
-        "name": "submit_service_request",
-        "description": "Submit the service request once all 5 fields are collected: issue, urgency, address, callback number, and customer name.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "issue":    {"type": "string", "description": "Plumbing problem description"},
-                "urgency":  {"type": "string", "description": "Urgency — active leak/flooding or not"},
-                "address":  {"type": "string", "description": "Full service address"},
-                "callback": {
-                    "type": "string",
-                    "description": "Callback phone number. If the caller confirms 'this number is good' or similar, submit the actual caller phone number, not the phrase.",
-                },
-                "name":     {"type": "string", "description": "Customer name"},
-                "extra_fields": {
-                    "type": "object",
-                    "description": "Tenant-specific intake policy answers, keyed by field key. Include required and ask_once question answers here. Do not set values to 'unknown' unless the caller actually said they do not know, declined, or gave no answer after you asked. Do not infer homeowner/renter.",
-                },
-            },
-            "required": ["issue", "urgency", "address", "callback", "name"],
-        },
-    }
-]
+TOOLS = build_tools(load_vertical("plumbing"))
 
 
 def build_session_update(

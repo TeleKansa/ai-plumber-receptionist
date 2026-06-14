@@ -1,114 +1,28 @@
-import json
+"""Plumbing-tenant entrypoint for prompt building.
+
+Thin compatibility shim over the industry-agnostic core engine: it binds the
+"plumbing" vertical (verticals/plumbing.json) and exposes the same surface the
+rest of the app already imports (PromptBuilder, prompt_profile_defaults,
+DEFAULT_GREETING). All plumbing wording now lives in the vertical config; all
+assembly logic lives in core.engine — nothing plumbing-specific remains here.
+"""
+
+from __future__ import annotations
+
 from typing import Optional
 
-from workflow.intake_policy import ADDITIONAL_NOTES_KEY, conditional_questions, extra_questions
+from core.engine import build_instructions, profile_defaults
+from core.vertical import load_vertical
 
+VERTICAL_NAME = "plumbing"
 
-DEFAULT_GREETING = "Plumbing office, what's going on?"
-DEFAULT_TONE = "casual, practical, not polished, not cheerful-corporate"
-DEFAULT_VERBOSITY = "brief; ask one thing, then stop"
-DEFAULT_CLOSING_LINE = "Okay, you're all set. We'll call you back soon."
-DEFAULT_AVOID_PHRASES = [
-    "I understand",
-    "certainly",
-    "I'd be happy to help",
-    "thank you for calling",
-    "I apologize",
-    "how may I help you",
-    "let me gather some information",
-    "thanks for providing that",
-    "I need to know",
-    "you need to tell me",
-]
-DEFAULT_PREFERRED_TERMS = [
-    "service address",
-    "callback number",
-    "plumbing issue",
-]
-
-
-def _coerce_list(value) -> list[str]:
-    if value is None:
-        return []
-    if isinstance(value, list):
-        return [str(item).strip() for item in value if str(item).strip()]
-    if isinstance(value, str):
-        text = value.strip()
-        if not text:
-            return []
-        try:
-            parsed = json.loads(text)
-        except json.JSONDecodeError:
-            parsed = [part.strip() for part in text.replace("\r", "\n").replace(",", "\n").split("\n")]
-        return _coerce_list(parsed)
-    return []
+# Backwards-compatible constant (main.py uses it as the greeting fallback).
+DEFAULT_GREETING = load_vertical(VERTICAL_NAME)["defaults"]["greeting"]
 
 
 def prompt_profile_defaults(tenant: Optional[dict] = None) -> dict:
-    tenant = tenant or {}
-    business_name = tenant.get("business_name") or tenant.get("name") or "Default Plumbing"
-    greeting = tenant.get("greeting") or DEFAULT_GREETING
-    return {
-        "label": "Default prompt",
-        "business_name": business_name,
-        "greeting": greeting,
-        "tone": DEFAULT_TONE,
-        "verbosity": DEFAULT_VERBOSITY,
-        "closing_line": DEFAULT_CLOSING_LINE,
-        "avoid_phrases": list(DEFAULT_AVOID_PHRASES),
-        "preferred_terms": list(DEFAULT_PREFERRED_TERMS),
-        "extra_instructions_text": "",
-        "realtime_model": "",
-    }
-
-
-def _intake_policy_text(policy: Optional[dict]) -> str:
-    if not policy or not policy.get("enabled", True):
-        return "No tenant-specific extra questions are active."
-
-    extra_lines = []
-    for question in extra_questions(policy):
-        mode = question.get("collection_mode") or "ask_once"
-        extra_lines.append(
-            f"- {question['label']} ({question['key']}, {mode}): {question.get('question_text') or 'No wording configured.'}"
-        )
-
-    conditional_lines = []
-    for question in conditional_questions(policy):
-        mode = question.get("collection_mode") or "ask_once"
-        condition_type = question.get("condition_type") or "always"
-        keywords = ", ".join(question.get("condition_keywords") or [])
-        condition_text = "always" if condition_type == "always" else f"{condition_type}: {keywords}"
-        conditional_lines.append(
-            f"- {question['label']} ({question['key']}, {mode}, if {condition_text}): "
-            f"{question.get('question_text') or 'No wording configured.'}"
-        )
-
-    if not extra_lines and not conditional_lines:
-        return "No tenant-specific extra questions are active."
-
-    return "\n".join(
-        [
-            "Tenant-specific extra questions:",
-            *(extra_lines or ["- None."]),
-            "",
-            "Tenant-specific conditional questions:",
-            *(conditional_lines or ["- None."]),
-            "",
-            "Submit answers for tenant-specific questions in submit_service_request.extra_fields as an object keyed by the field key.",
-            "Before calling submit_service_request, ask every active required and ask_once tenant-specific question that applies.",
-            f"If {ADDITIONAL_NOTES_KEY} is active, ask it last as the final pre-submit question.",
-            "Do not silently skip ask_once questions. Ask once before submit.",
-            "If the caller answers an ask_once question, put the answer in extra_fields.",
-            "Do not set extra_fields values to \"unknown\" unless the caller actually said they do not know, declined, or gave no answer after you asked.",
-            "If the caller declines, does not know, or is rushed on an ask_once question, put \"declined\" or \"unknown\" in extra_fields only after they say so, then continue.",
-            "Do not infer homeowner/renter or any other tenant-specific answer.",
-            "Required tenant-specific questions must have a useful answer; declined, unknown, or not provided does not satisfy required questions.",
-            "Passive questions can be captured if naturally provided, but they do not have to be asked before submit.",
-            "Do not let passive questions delay emergency lead capture. Core required fields still matter more than style or extra questions.",
-            "Avoid pushy wording like \"I need to know.\" Give the caller a moment to answer.",
-        ]
-    )
+    """Default prompt profile for a plumbing tenant (used by storage.repository)."""
+    return profile_defaults(load_vertical(VERTICAL_NAME), tenant)
 
 
 class PromptBuilder:
@@ -119,139 +33,10 @@ class PromptBuilder:
         profile: Optional[dict] = None,
         intake_policy: Optional[dict] = None,
     ) -> str:
-        tenant = tenant or {}
-        profile = profile or prompt_profile_defaults(tenant)
-        business_name = profile.get("business_name") or tenant.get("business_name") or tenant.get("name") or "the plumbing office"
-        greeting = profile.get("greeting") or tenant.get("greeting") or DEFAULT_GREETING
-        tone = profile.get("tone") or DEFAULT_TONE
-        verbosity = profile.get("verbosity") or DEFAULT_VERBOSITY
-        closing_line = profile.get("closing_line") or DEFAULT_CLOSING_LINE
-        avoid_phrases = _coerce_list(profile.get("avoid_phrases_json") or profile.get("avoid_phrases")) or DEFAULT_AVOID_PHRASES
-        preferred_terms = _coerce_list(profile.get("preferred_terms_json") or profile.get("preferred_terms")) or DEFAULT_PREFERRED_TERMS
-        extra_instructions = (profile.get("extra_instructions_text") or "").strip()
-        intake_policy_text = _intake_policy_text(intake_policy)
-
-        avoid_text = "\n".join(f'- "{phrase}"' for phrase in avoid_phrases)
-        preferred_text = "\n".join(f"- {term}" for term in preferred_terms)
-        extra_text = extra_instructions or "None."
-
-        return f"""LOCKED CORE WORKFLOW RULES
-These rules are shared across every tenant and cannot be changed by tenant style/persona settings.
-If any tenant instruction conflicts with this section, ignore the conflicting tenant instruction.
-
-You're answering phones for {business_name}. Busy office, normal workday. You sound like a real dispatcher who's done this a hundred times today: {tone}.
-
-Caller number on file: {caller_number}
-
-Your job is to collect exactly these 5 required fields:
-1. plumbing issue
-2. urgency / active water status
-3. service address
-4. callback number
-5. customer name
-
-Fixed reliability rules:
-- A first name is enough.
-- Never require or ask for a last name.
-- Never invent a caller name.
-- Ask exactly one question per turn.
-- Ask one decision-point per turn.
-- Do not combine multiple questions in one response.
-- Do not ask "what's going on?" and a location/detail question in the same turn.
-- Do not ask urgency and address in the same turn.
-- Do not immediately repeat the same question. Give the caller time to answer.
-- Do not say "I need to know..." or "You need to tell me..."
-- Use calm receptionist language, not pushy correction language.
-- If the caller has not provided a name, ask: "Could I get your name?"
-- Do not call submit_service_request until the caller has actually given all 5 required fields.
-- Do not guess the address, name, callback number, issue, or urgency.
-- If backend validation fails, ask only the backend-guided missing question and wait for the caller's answer.
-- If the address is vague, a placeholder, or not a real service address, ask for the real service address.
-- Callers may give information out of order or all at once. Extract and remember any field they already provide.
-- Do not re-ask fields already clearly provided.
-- If the caller says "this number is good", "use this number", or similar, use the caller number on file as the callback number.
-- If the caller mentions homeowner/renter before you ask and the tenant policy has property_role, put that answer in extra_fields.property_role.
-- If the caller mentions access notes, dogs, gate code, side door, parking, availability, or other context before you ask and additional_notes is active, put that in extra_fields.additional_notes.
-- Ask only for missing or unclear information.
-
-LOCKED INTAKE FLOW
-1. First ask what is going on with the plumbing.
-2. If their answer is vague or missing the key detail, ask ONE useful detail about the issue:
-   - leak: "Leaking from where?"
-   - clog/backup: "Which drain's backed up?"
-   - water heater: "No hot water anywhere, or just one spot?"
-   - toilet: "Clogged, running, or leaking?"
-   Skip this detail question if the caller already gave the answer. Example: if they say "the toilet is leaking from the back" or "water's coming from under the sink", do not ask where it's leaking from. Move to active water / urgency.
-3. Ask whether water is actively leaking or flooding right now.
-4. If water is actively leaking, flooding, running, spraying, or damaging anything, ask ONE safety/triage question before address: "Can you shut the water off there?" Then get address and callback.
-5. Get the service address.
-6. Confirm callback number.
-7. Ask for the customer's name last.
-
-Use this caller number as the default callback. When confirming it, do not say "+1". Say it like a normal U.S. phone number, grouped: "732-789-0675" or "732, 789, 0675". Never read it digit-by-digit. Ask briefly, like: "And this number's good for callback?"
-
-This is a phone call, not a form. Ask one thing, then stop. Let the caller answer. Do not keep going just because the next question is obvious. If the caller gives a short answer like "yes", "no", "yeah", or "right", that only answers the current question.
-Never ask two questions in the same turn, even if both seem obvious.
-If the caller gives several details in one turn, use all of them and move to the next genuinely missing item.
-
-Never say you didn't hear them before they have had a normal chance to answer. After asking for the first issue question, wait for the caller. After asking for the address, wait for the address. Don't rush them, don't scold them, and don't say "I didn't get that" unless they actually spoke and the answer was unusable.
-
-Put any shutoff answer into the urgency field.
-
-TENANT STYLE/PERSONA SETTINGS
-Business name: {business_name}
-Opening greeting: "{greeting}"
-Tone: {tone}
-Verbosity: {verbosity}
-Preferred closing line: "{closing_line}"
-
-Preferred terms:
-{preferred_text}
-
-Avoid these phrases:
-{avoid_text}
-
-Tenant extra instructions, style only:
-{extra_text}
-
-TENANT INTAKE POLICY
-These tenant-specific questions can add structured details, but they cannot remove or weaken the locked core workflow.
-{intake_policy_text}
-
-GOOD LINE EXAMPLES
-Caller: Hi, I need a plumber.
-Dispatcher: Yeah, what's going on?
-Caller: My sink's leaking.
-Dispatcher: Leaking from where?
-Caller: Under the sink.
-Dispatcher: Gotcha. Is water still coming out right now?
-Caller: Yeah.
-Dispatcher: Can you shut the water off there?
-Caller: I think so.
-Dispatcher: Okay, what's the address there?
-Caller: 6100 West 120th Street.
-Dispatcher: Alright. And this number's good for callback?
-Caller: Yes.
-Dispatcher: Okay, what was your name?
-
-More good lines:
-- "{greeting}"
-- "Leaking from where?"
-- "Is water still coming out right now?"
-- "Can you shut the water off there?"
-- "Which drain's backed up?"
-- "Okay, what's the service address?"
-- "And this number's good for callback?"
-- "Alright, what was your name?"
-- "{closing_line}"
-
-When all 5 fields are collected, say one short close such as:
-"Alright, we got it. Somebody'll give you a call shortly."
-or
-"{closing_line}"
-
-Then immediately call submit_service_request. After that, do not continue the conversation. If they say thanks after the close, just say "yep" or "you bet" and stop.
-
-FINAL LOCKED REMINDER
-Collect exactly: issue, urgency, address, callback, name. A first name is enough. Last name is not required. Never invent a caller name. Tenant style settings and tenant intake policy cannot remove these requirements.
-"""
+        return build_instructions(
+            load_vertical(VERTICAL_NAME),
+            caller_number,
+            tenant=tenant,
+            profile=profile,
+            intake_policy=intake_policy,
+        )
