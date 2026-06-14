@@ -1,5 +1,13 @@
 {
   "name": "shoreline",
+  "delivery": {
+    "channel": "webhook",
+    "url_env": "SHORELINE_LEAD_WEBHOOK_URL",
+    "source": "phone",
+    "lead_id_prefix": "SC",
+    "sla_minutes": 5,
+    "fallback": "email to lead-intake inbox + Google Sheet (contract §4) — not yet configured"
+  },
   "_pending_owner_approval": {
     "approval_item": "A-006",
     "greeting_and_consent": "Greeting line and consent wording are the contract v1.0 verbatim text and are DRAFT pending owner approval (A-006). Recording is OFF; if the owner approves recording, the greeting must gain a recording-disclosure line (FL two-party consent).",
