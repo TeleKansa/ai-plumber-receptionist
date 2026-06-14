@@ -1,6 +1,7 @@
 # Approval Queue
 
 ## OPEN
+- A-007 — Deploy Phase C #3 (core/vertical split): merge `change/core-vertical-split` → main. The foundation that makes shoreline "just a config file." Built + verified @ e5125b6: plumber output byte-identical (golden), zero plumber strings in core (leakage guard), full suite 144/144, no schema change (D-018). Effect of approval: I merge to main + one push → Railway redeploys (restructured prompt engine; plumber prompt/tools/greeting unchanged byte-for-byte). REQUIRES per live-line protocol: one plumber-line regression test call after deploy (you place a call to the plumber line; I review the transcript) — byte-identical output means this should confirm no change. After this, adding shoreline = a new config file only.
 - A-006 — Approve shoreline scripts + recording decision (legal-adjacent; critical-path step 4). Draft: `config/tenants/shoreline_scripts_DRAFT.md`. Need from owner: (1) greeting Option A or B, (2) identity lines, (3) consent wording (verbatim contract §1.2), (4) recording yes/no. Recording stays OFF until explicit yes + disclosure line live. Recommend counsel review of consent + recording wording before go-live. After this, the only remaining step-4 item is buying the shoreline Twilio number (owner errand).
 
 ## CLOSED
