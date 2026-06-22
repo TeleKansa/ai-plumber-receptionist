@@ -4,7 +4,7 @@
 Consolidation + cutover DONE (D-010/D-011); Phase C #1 /version + #2 metrics DEPLOYED (D-013/D-015). Priority now = make the shoreline vertical usable so it can take a real homeowner call. Owner directive 2026-06-12: minimal-scope refactor; defer all nice-to-haves.
 - [x] Step 1: core/vertical split ✅ DEPLOYED 2026-06-12 (main@ac1f051; /version verified; byte-identical; D-019). Pending one plumber-line regression test call (owner).
 - [~] Step 2: shoreline.json + tenant→vertical selection BUILT on branch change/shoreline-vertical @ dea2f5b (148/148; plumber byte-identical; D-020/D-021). Remaining: A-006 wording + deploy (A-008, recommend batch with step 3).
-- [~] Step 3: lead delivery PART 1 built @ 8a18f4e (delivery module + §3 payload + webhook §4; 155/155; D-022); part 2 = handler routing; webhook URL owner-set (§5.4)
+- [x] Step 3: lead delivery DONE on branch @ 45a9dae — §3 payload + §4 webhook + consent gate + per-vertical handler routing (plumbing unchanged; 158/158; D-023); webhook URL owner-set (§5.4)
 - [ ] Step 4 (OWNER, gating): shoreline Twilio number + consent/greeting approvals + webhook host
 - [ ] Step 5: provision shoreline tenant + number routing; scripted + live test call, transcript logged
 - [ ] Step 6: go live → first real homeowner call
@@ -22,7 +22,7 @@ Consolidation + cutover DONE (D-010/D-011); Phase C #1 /version + #2 metrics DEP
 ## P2 — shoreline vertical (blocked on owner Twilio errand + scripts)
 - [~] verticals/shoreline.json DRAFTED @ 70a467f (D-020); pending A-006 wording + tenant→vertical selection wiring
 - [x] tenant→vertical selection wiring — DONE on branch change/shoreline-vertical @ dea2f5b (D-021); ships with A-008
-- [~] Lead delivery: PART 1 built @ 8a18f4e (build_shoreline_lead §3 + deliver_lead_webhook §4 + delivery spec; 155/155; D-022). Part 2 = handler routing; owner sets SHORELINE_LEAD_WEBHOOK_URL (§5.4); email/sheet fallback TBD.
+- [x] Lead delivery DONE @ 45a9dae — §3 payload + §4 webhook + consent gate + per-vertical handler routing (158/158; D-023). Owner sets SHORELINE_LEAD_WEBHOOK_URL (§5.4); email/sheet fallback TBD.
 
 ## P3/P4 — not started
 - Demo tenant, onboarding template, pricing proposal, per-client metrics reports, missed-call alerting
