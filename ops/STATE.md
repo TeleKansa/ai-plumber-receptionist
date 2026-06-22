@@ -20,7 +20,7 @@ Goal: a real Cape Coral homeowner calls the shoreline number → answered as "Sh
 4. OWNER one-time errand (GATING): buy shoreline Twilio number; approve consent script (legal-adjacent); approve greeting/identity script; confirm webhook hosting. [owner — currently deferred = the real bottleneck]
 5. provision + test: register shoreline tenant + route number → shoreline vertical; scripted media-stream test + one live test call on testing/allowed-test-caller path; transcript logged. [operator; live test needs #4]
 6. go live: flip shoreline tenant live → first real homeowner call end to end. [owner + real caller]
-Operator can do 1–3 and the software of 5 without the number; the FIRST REAL CALL is gated on owner step 4. Do NOT pursue until shoreline is live: more metrics, more self-verification endpoints, weekly-report automation.
+All operator software (steps 1–3) is DONE & deployed. The FIRST REAL CALL is now gated entirely on owner step 4 (scripts A-006, webhook URL, Twilio number) → **owner runbook: ops/SHORELINE_GOLIVE_owner_steps.md**. Then operator provisions (tenant + number, needs admin/DB access) + a test call. Do NOT pursue until shoreline is live: more metrics, more self-verification endpoints, weekly-report automation.
 
 ## Production truth
 - One branch: main @ 4a4ac1d = multi-tenant code (plumber byte-identical to old phase-1a tip 77b5537) + charter/ops + /version (#1) + /admin/metrics.json (#2) + core/vertical split (#3) + complete shoreline software (config/selection/delivery/handler routing — DORMANT, no tenant uses it). Deployed SHA via GET /version (=4a4ac1d).
