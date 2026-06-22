@@ -3,8 +3,11 @@
 ## NOW — 🎯 SHORELINE CRITICAL PATH (the priority; STATE.md has the 6-step countdown)
 Consolidation + cutover DONE (D-010/D-011); Phase C #1 /version + #2 metrics DEPLOYED (D-013/D-015). Priority now = make the shoreline vertical usable so it can take a real homeowner call. Owner directive 2026-06-12: minimal-scope refactor; defer all nice-to-haves.
 - [x] Step 1: core/vertical split ✅ DEPLOYED 2026-06-12 (main@ac1f051; /version verified; byte-identical; D-019). Pending one plumber-line regression test call (owner).
-- [~] Step 2: shoreline.json + tenant→vertical selection BUILT on branch change/shoreline-vertical @ dea2f5b (148/148; plumber byte-identical; D-020/D-021). Remaining: A-006 wording + deploy (A-008, recommend batch with step 3).
-- [x] Step 3: lead delivery DONE on branch @ 45a9dae — §3 payload + §4 webhook + consent gate + per-vertical handler routing (plumbing unchanged; 158/158; D-023); webhook URL owner-set (§5.4)
+- [x] Step 2: shoreline.json + tenant→vertical selection ✅ DEPLOYED (main@4a4ac1d; D-021/D-024). Final wording pending A-006.
+- [x] Step 3: lead delivery + handler routing ✅ DEPLOYED (main@4a4ac1d; plumbing unchanged; 158/158; D-023/D-024). Webhook URL owner-set (§5.4)
+- [ ] Step 4 (OWNER, gate): A-006 wording + SHORELINE_LEAD_WEBHOOK_URL + buy/route Twilio number
+- [ ] Step 5: create shorelinecost tenant + route number (operator, once number exists); shoreline test call
+- [ ] Step 6: go live → first real homeowner call
 - [ ] Step 4 (OWNER, gating): shoreline Twilio number + consent/greeting approvals + webhook host
 - [ ] Step 5: provision shoreline tenant + number routing; scripted + live test call, transcript logged
 - [ ] Step 6: go live → first real homeowner call

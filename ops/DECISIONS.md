@@ -139,3 +139,12 @@ Branch change/shoreline-vertical @ 45a9dae (pushed; deploy-inert). The live call
 - Minor follow-up (not a blocker): tool-args parse-FAILURE retry hints (main.py ~354/991) literally say "Retry submit_service_request" — names the wrong tool for a shoreline parse failure (edge case; the AI re-calls the right tool from its prompt). Polish later.
 **SHORELINE SOFTWARE IS COMPLETE.** A shoreline-bound tenant now answers as Shoreline Cost, qualifies via the 8 questions, reads consent, calls submit_project_inquiry → handler packages the §3 lead and POSTs it to the configured webhook (consent=false → logged, never delivered).
 Everything remaining to a real shoreline call is owner-side or provisioning: A-006 wording; SHORELINE_LEAD_WEBHOOK_URL value (§5.4); buy + route the Twilio number; create the shorelinecost tenant; a plumber-line regression call (for the deployed #3) + a shoreline test call; then go live. Deploy of the whole branch = A-008 (now the full shoreline software unit).
+
+## D-024 — 2026-06-12 — Phase C #3 steps 2–3 DEPLOYED: complete shoreline software live (A-008 executed)
+- Merge change/shoreline-vertical → main = 4a4ac1d; code delta vs prior main caec39c = core/vertical.py +12, main.py +82, verticals/shoreline.json +111, workflow/lead_delivery.py +147, tests +182. Full suite 158/158 on the merged tree.
+- Push caec39c..4a4ac1d → origin/main (exit 0). phase-1a re-verified UNCHANGED at 77b5537 before/after.
+- External verification: `GET /version` → `{"commit":"4a4ac1d…","branch":"main"}`; /health ok. (One transient web_fetch timeout during verify — retried, confirmed.)
+- **SHORELINE IS DORMANT:** no shorelinecost tenant/number exists, so the vertical-selection map never selects it; every live call still resolves to plumbing (byte-identical). Live behavior unchanged.
+- OPEN follow-up (owner, only-a-real-call): plumber-line regression test call to confirm the live plumber line still answers normally after this + the #3 refactor — owner said he will place it now.
+- **A-008 CLOSED. ALL of Phase C is deployed: #1 /version, #2 metrics, #3 core/vertical split + complete shoreline software.**
+Remaining to shoreline's first real call (steps 4–6, owner/provisioning): A-006 wording; SHORELINE_LEAD_WEBHOOK_URL value (§5.4); buy + route Twilio number; create shorelinecost tenant (operator, once number exists); shoreline test call; go live.
