@@ -108,3 +108,40 @@ async def deliver_lead_webhook(url: str, payload: dict, *, post_func=None) -> De
         )
     except Exception as exc:  # network/timeout/etc.
         return DeliveryResult(delivered=False, channel="webhook", error=str(exc))
+
+
+async def deliver_shoreline_lead(
+    args: dict,
+    *,
+    vertical: Optional[dict] = None,
+    call_sid: str = "",
+    from_number: str = "",
+    post_func=None,
+) -> dict:
+    """Build the §3 lead and deliver per the vertical's delivery spec.
+
+    consent=false → never delivered to buyers (logged only, per contract §3). Returns a
+    plain dict the call handler can log + use to decide the function_call_output.
+    """
+    payload = build_shoreline_lead(args, call_sid=call_sid, from_number=from_number)
+    if not payload["consent"]:
+        return {
+            "delivered": False,
+            "channel": "none",
+            "skipped_reason": "consent_declined",
+            "consent": False,
+            "status_code": None,
+            "error": None,
+            "payload": payload,
+        }
+    url = webhook_url((vertical or {}).get("delivery"))
+    result = await deliver_lead_webhook(url, payload, post_func=post_func)
+    return {
+        "delivered": result.delivered,
+        "channel": result.channel,
+        "skipped_reason": result.skipped_reason,
+        "consent": True,
+        "status_code": result.status_code,
+        "error": result.error,
+        "payload": payload,
+    }

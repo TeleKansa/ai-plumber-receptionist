@@ -6,8 +6,11 @@ from workflow.lead_delivery import (
     DeliveryResult,
     build_shoreline_lead,
     deliver_lead_webhook,
+    deliver_shoreline_lead,
     webhook_url,
 )
+
+SHORELINE_VERTICAL = {"delivery": {"url_env": "SHORELINE_LEAD_WEBHOOK_URL"}}
 
 ARGS = {
     "name": "Sam",
@@ -96,3 +99,30 @@ def test_deliver_failure_on_5xx():
     assert result.delivered is False
     assert result.status_code == 503
     assert "503" in (result.error or "")
+
+
+def test_deliver_shoreline_lead_consent_declined_never_delivers():
+    res = asyncio.run(deliver_shoreline_lead({"name": "X", "consent": False}, vertical=SHORELINE_VERTICAL))
+    assert res["delivered"] is False
+    assert res["skipped_reason"] == "consent_declined"
+    assert res["consent"] is False
+
+
+def test_deliver_shoreline_lead_delivers_with_url(monkeypatch):
+    monkeypatch.setenv("SHORELINE_LEAD_WEBHOOK_URL", "https://example.test/leads")
+
+    async def fake_post(url, payload):
+        assert payload["consent"] is True
+        return 200
+
+    res = asyncio.run(deliver_shoreline_lead(dict(ARGS), vertical=SHORELINE_VERTICAL, post_func=fake_post))
+    assert res["delivered"] is True
+    assert res["consent"] is True
+    assert res["status_code"] == 200
+
+
+def test_deliver_shoreline_lead_skips_when_url_unset(monkeypatch):
+    monkeypatch.delenv("SHORELINE_LEAD_WEBHOOK_URL", raising=False)
+    res = asyncio.run(deliver_shoreline_lead(dict(ARGS), vertical=SHORELINE_VERTICAL))
+    assert res["delivered"] is False
+    assert res["skipped_reason"] == "no_webhook_url_configured"

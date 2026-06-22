@@ -28,6 +28,7 @@ from config.settings import get_settings
 from storage.database import init_db
 from storage import repository
 from workflow.notifications import SmsSendResult, build_sms_body as build_notification_sms_body
+from workflow.lead_delivery import deliver_shoreline_lead
 from workflow.prompt_builder import DEFAULT_GREETING, PromptBuilder
 from core.engine import build_instructions, build_tools
 from core.vertical import load_vertical, resolve_vertical_name
@@ -1003,8 +1004,45 @@ async def media_stream(ws: WebSocket):
             log.warning(f"[{call_sid}] tool call incomplete: {payload}")
             safe_record_call_event(call_sid, "tool_call_incomplete", payload)
 
+        async def _process_external_lead_submit(record: dict, args: dict, submit_tool: str, parse_result) -> bool:
+            # Webhook-delivered verticals (e.g. shoreline). Plumbing never reaches here.
+            session = sessions.get(call_sid, {})
+            session["submit_service_request_seen"] = True
+            log.info(f"[{call_sid}] {submit_tool} source={parse_result.source}: {args}")
+            delivery = await deliver_shoreline_lead(
+                args,
+                vertical=session.get("vertical") or {},
+                call_sid=call_sid,
+                from_number=session.get("from_number", "unknown"),
+            )
+            safe_record_call_event(
+                call_sid,
+                "external_lead_submit",
+                {
+                    "submit_tool": submit_tool,
+                    "delivered": delivery["delivered"],
+                    "skipped_reason": delivery.get("skipped_reason"),
+                    "status_code": delivery.get("status_code"),
+                    "consent": delivery.get("consent"),
+                },
+            )
+            session["complete"] = True
+            session["pending_hangup"] = True
+            session["closing_response_started"] = False
+            await oai_ws.send(json.dumps({
+                "type": "conversation.item.create",
+                "item": {
+                    "type": "function_call_output",
+                    "call_id": record.get("call_id") or "",
+                    "output": json.dumps({"success": bool(delivery["delivered"] or delivery.get("skipped_reason"))}),
+                },
+            }))
+            await send_response_create("external_lead_submitted", {"type": "response.create"})
+            return True
+
         async def process_submit_tool_call(record: dict, *, allow_output_item_fallback: bool, trigger: str):
-            if (record.get("name") or "") != "submit_service_request":
+            submit_tool = sessions.get(call_sid, {}).get("submit_tool_name") or "submit_service_request"
+            if (record.get("name") or "") != submit_tool:
                 return False
             if record.get("processed"):
                 safe_record_call_event(
@@ -1053,6 +1091,8 @@ async def media_stream(ws: WebSocket):
                 processed_tool_calls.add(tool_call_key)
 
             args = parse_result.args or {}
+            if submit_tool != "submit_service_request":
+                return await _process_external_lead_submit(record, args, submit_tool, parse_result)
             session["submit_service_request_seen"] = True
             log.info(f"[{call_sid}] submit_service_request source={parse_result.source}: {args}")
             intake_policy = session.get("intake_policy")
@@ -1465,6 +1505,8 @@ async def media_stream(ws: WebSocket):
                 realtime_effort = realtime_reasoning_effort(realtime_model)
                 realtime_url = build_realtime_url(realtime_model, OAI_URL)
                 session["tenant"] = tenant
+                session["vertical"] = _vertical_for(tenant)
+                session["submit_tool_name"] = (session["vertical"].get("tool") or {}).get("name") or "submit_service_request"
                 session["tenant_id"] = tenant["id"]
                 session["prompt_profile"] = prompt_profile
                 session["intake_policy"] = intake_policy
