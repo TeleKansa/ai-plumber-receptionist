@@ -26,6 +26,8 @@ Consolidation + cutover DONE (D-010/D-011); Phase C #1 /version + #2 metrics DEP
 - [~] verticals/shoreline.json DRAFTED @ 70a467f (D-020); pending A-006 wording + tenant→vertical selection wiring
 - [x] tenant→vertical selection wiring — DONE on branch change/shoreline-vertical @ dea2f5b (D-021); ships with A-008
 - [x] Lead delivery DONE @ 45a9dae — §3 payload + §4 webhook + consent gate + per-vertical handler routing (158/158; D-023). Owner sets SHORELINE_LEAD_WEBHOOK_URL (§5.4); email/sheet fallback TBD.
+- [ ] Shoreline lead webhook FUNCTION (Netlify on the Shoreline site, mirroring Septic form-lead) — OPERATOR task per owner; **BLOCKED on connecting the Shoreline site/repo + Septic precedent** (D-026). Then URL → SHORELINE_LEAD_WEBHOOK_URL.
+- [ ] Call-recording capture (Twilio) + recording_url + recording-disclosure greeting line — owner approved recording (A-006 ②); NOT built; ship disclosure + capture together; spend/storage consideration (D-026).
 
 ## P3/P4 — not started
 - Demo tenant, onboarding template, pricing proposal, per-client metrics reports, missed-call alerting

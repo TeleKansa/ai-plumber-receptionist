@@ -1,7 +1,7 @@
 # Approval Queue
 
 ## OPEN
-- A-006 — Approve shoreline scripts + recording decision (legal-adjacent; critical-path step 4). Draft: `config/tenants/shoreline_scripts_DRAFT.md`. Need from owner: (1) greeting Option A or B, (2) identity lines, (3) consent wording (verbatim contract §1.2), (4) recording yes/no. Recording stays OFF until explicit yes + disclosure line live. Recommend counsel review of consent + recording wording before go-live. After this, the only remaining step-4 item is buying the shoreline Twilio number (owner errand).
+- A-006 — Shoreline scripts: **owner decisions made 2026-06-12** (greeting/role → "project assistant"; identity lines approved; recording = yes-with-disclosure; consent current wording OK, phone leads = direct matching, no resale; D-026). Greeting change applied on branch change/shoreline-scripts-a006. **Still OPEN: pending owner's lawyer review of consent + phone wording before go-live.** Coupled gates: recording-capture is unbuilt (disclosure ships with capture); cross-vertical consent rule with Septic recorded (resale change = both verticals + re-approval).
 
 ## CLOSED
 - A-008 — DEPLOYED 2026-06-12: complete shoreline software merged → main (4a4ac1d); /version verified; plumber byte-identical (158/158); shoreline dormant until provisioning (D-024).

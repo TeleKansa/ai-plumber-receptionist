@@ -8,29 +8,28 @@ independent (do them in any order). When they're done I do the provisioning + te
 
 ---
 
-## Task 1 — Approve the scripts (A-006)   ~10 min (+ optional legal review)
-What: lock the greeting / identity / consent wording and the record-or-not decision.
-How:
-1. Open `config/tenants/shoreline_scripts_DRAFT.md`.
-2. Decide four things: (a) greeting Option A (no recording) or B (with recording disclosure);
-   (b) the two identity lines; (c) the consent wording (contract-verbatim); (d) record: yes / no.
-3. Recommended: Option B + recording ON — Florida is two-party-consent (disclosure required if
-   recording) and recordings raise the "phone-qualified" lead value.
-4. Legal-adjacent: have a lawyer glance at the consent line (TCPA / lead-sharing) and the
-   recording decision before go-live.
-5. Reply with your choices (or edits). I lock them into the live shoreline config.
+## Task 1 — Approve the scripts (A-006) — ✅ your decisions received 2026-06-12; pending lawyer review
+Decided: greeting/role → "project assistant" (not "scheduling"); identity lines approved; recording =
+yes (with disclosure); consent current wording OK (direct matching to ≤3 contractors, no resale).
+Applied to the shoreline config on branch change/shoreline-scripts-a006.
+REMAINING on you: have your lawyer review the consent + phone wording before go-live (you flagged this);
+A-006 stays open until then.
+Notes: (a) actually RECORDING calls is a small software feature I still have to build — the recording
+disclosure line goes live together with it (so we never claim to record when we don't). (b) Cross-vertical
+rule recorded: Shoreline + Septic consent wording stay unified; allowing resale later changes both + re-approval.
 
-## Task 2 — Stand up the lead webhook   ~30 min
-What: a URL ShorelineCost exposes that receives each lead as an HTTP POST and saves it.
-The exact JSON we send is the schema in `INTEGRATION_loopline_shorelinecost.md` §3.
-How (pick the easiest for you):
-- No-code: a Zapier / Make "Catch Hook" → append a row to a Google Sheet (and/or email you).
-  Copy the hook URL.
-- Serverless: a ~20-line Netlify / Vercel / Cloudflare function that appends to a sheet or DB.
-- Your own backend: an endpoint on the ShorelineCost site.
-Then: send me the URL. It goes into the Railway env var `SHORELINE_LEAD_WEBHOOK_URL` (I'll give you
-the exact click path, same as the watch-paths setup). Before go-live I'll POST a sample lead so you
-can confirm your endpoint receives it.
+## Task 2 — Connect the Shoreline site so I can build the lead webhook (this is MY job now)
+You reassigned the lead-receiver to me — good. I'll build a Netlify Function on the Shoreline site that
+mirrors your Septic form-lead Function: it receives Loopline's §3 lead POST and appends it to the same
+lead log with `source=phone`, then I hand you the URL to relay to Loopline.
+What I need from you (one of):
+- Connect the Shoreline site's repo/folder to me AND point me at the Septic Function as the pattern to
+  copy — then I add the Function and deploy it the way I deploy Loopline; or
+- Give me access to the Shoreline Netlify project (a Netlify connector is available).
+Why this matters: I currently only have the `loopline` folder, so I literally can't build it until the
+Shoreline site is connected. (This is NOT the old git blocker — Loopline deploys are working; production
+is live right now at 4a4ac1d.) Once it's built + deployed I set `SHORELINE_LEAD_WEBHOOK_URL` in Railway
+and POST a sample lead to confirm end to end.
 
 ## Task 3 — Buy + point the Twilio number   ~15 min (owner-only: funding/payment)
 What: a phone number for the shoreline line, pointed at our app.
