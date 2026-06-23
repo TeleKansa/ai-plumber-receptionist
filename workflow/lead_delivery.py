@@ -16,6 +16,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from typing import Optional
 
+from workflow.validation import looks_like_phone
+
 
 @dataclass(frozen=True)
 class DeliveryResult:
@@ -48,12 +50,16 @@ def build_shoreline_lead(
     extra = args.get("extra_fields") or {}
     consent = bool(args.get("consent"))
     ts = now_iso or _now_iso()
+    # Callback safety net (mirrors the plumbing path): if the AI submitted a phrase like
+    # "this number is good" instead of a real number, fall back to the caller's number.
+    raw_callback = str(args.get("callback") or "").strip()
+    callback_phone = raw_callback if looks_like_phone(raw_callback) else (from_number or raw_callback or "")
     return {
         "lead_id": lead_id,
         "timestamp": ts,
         "source": source,
         "caller_name": args.get("name", ""),
-        "callback_phone": args.get("callback") or from_number or "",
+        "callback_phone": callback_phone,
         "email": args.get("email", ""),
         "zip": args.get("zip_code", ""),
         "market": "",
@@ -84,20 +90,36 @@ def webhook_url(delivery_spec: Optional[dict]) -> str:
     return os.getenv(env_name, "") if env_name else ""
 
 
-async def deliver_lead_webhook(url: str, payload: dict, *, post_func=None) -> DeliveryResult:
-    """POST the lead JSON to the webhook. `post_func(url, payload) -> status_code` is
+def auth_headers(delivery_spec: Optional[dict]) -> dict:
+    """Build the auth header from the vertical spec: {auth_header: <value of secret_env>}.
+
+    The secret VALUE comes only from the named env var — never from config or git. Returns
+    empty if the header name or secret env var is not configured / not set.
+    """
+    spec = delivery_spec or {}
+    header = spec.get("auth_header")
+    secret_env = spec.get("secret_env")
+    if not header or not secret_env:
+        return {}
+    secret = os.getenv(secret_env, "")
+    return {header: secret} if secret else {}
+
+
+async def deliver_lead_webhook(url: str, payload: dict, *, headers: Optional[dict] = None, post_func=None) -> DeliveryResult:
+    """POST the lead JSON to the webhook. `post_func(url, payload, headers) -> status_code` is
     injectable for tests; default uses httpx. No URL configured → skipped (not an error)."""
     if not url:
         return DeliveryResult(delivered=False, channel="webhook", skipped_reason="no_webhook_url_configured")
+    headers = headers or {}
     try:
         if post_func is None:
             import httpx
 
             async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.post(url, json=payload)
+                resp = await client.post(url, json=payload, headers=headers)
                 status_code = resp.status_code
         else:
-            status_code = await post_func(url, payload)
+            status_code = await post_func(url, payload, headers)
         status_code = int(status_code)
         delivered = 200 <= status_code < 300
         return DeliveryResult(
@@ -134,8 +156,9 @@ async def deliver_shoreline_lead(
             "error": None,
             "payload": payload,
         }
-    url = webhook_url((vertical or {}).get("delivery"))
-    result = await deliver_lead_webhook(url, payload, post_func=post_func)
+    delivery_spec = (vertical or {}).get("delivery")
+    url = webhook_url(delivery_spec)
+    result = await deliver_lead_webhook(url, payload, headers=auth_headers(delivery_spec), post_func=post_func)
     return {
         "delivered": result.delivered,
         "channel": result.channel,

@@ -3,6 +3,8 @@
   "delivery": {
     "channel": "webhook",
     "url_env": "SHORELINE_LEAD_WEBHOOK_URL",
+    "auth_header": "x-loopline-webhook-secret",
+    "secret_env": "SHORELINE_LEAD_WEBHOOK_SECRET",
     "source": "phone",
     "lead_id_prefix": "SC",
     "sla_minutes": 5,

@@ -4,13 +4,20 @@ import asyncio
 
 from workflow.lead_delivery import (
     DeliveryResult,
+    auth_headers,
     build_shoreline_lead,
     deliver_lead_webhook,
     deliver_shoreline_lead,
     webhook_url,
 )
 
-SHORELINE_VERTICAL = {"delivery": {"url_env": "SHORELINE_LEAD_WEBHOOK_URL"}}
+SHORELINE_VERTICAL = {
+    "delivery": {
+        "url_env": "SHORELINE_LEAD_WEBHOOK_URL",
+        "auth_header": "x-loopline-webhook-secret",
+        "secret_env": "SHORELINE_LEAD_WEBHOOK_SECRET",
+    }
+}
 
 ARGS = {
     "name": "Sam",
@@ -60,6 +67,14 @@ def test_callback_falls_back_to_caller_number():
     assert lead["callback_phone"] == "+12395550147"
 
 
+def test_callback_alias_phrase_uses_caller_number():
+    lead = build_shoreline_lead(
+        {"name": "Sam", "callback": "this number is good", "consent": True},
+        from_number="+12395550147",
+    )
+    assert lead["callback_phone"] == "+12395550147"
+
+
 def test_no_consent_leaves_consent_timestamp_blank():
     lead = build_shoreline_lead({"consent": False})
     assert lead["consent"] is False
@@ -80,7 +95,7 @@ def test_deliver_skips_when_no_url():
 
 
 def test_deliver_success_on_2xx():
-    async def fake_post(url, payload):
+    async def fake_post(url, payload, headers):
         assert url == "https://example.test/leads"
         assert payload["source"] == "phone"
         return 200
@@ -92,7 +107,7 @@ def test_deliver_success_on_2xx():
 
 
 def test_deliver_failure_on_5xx():
-    async def fake_post(url, payload):
+    async def fake_post(url, payload, headers):
         return 503
 
     result = asyncio.run(deliver_lead_webhook("https://example.test/leads", {"x": 1}, post_func=fake_post))
@@ -108,17 +123,32 @@ def test_deliver_shoreline_lead_consent_declined_never_delivers():
     assert res["consent"] is False
 
 
-def test_deliver_shoreline_lead_delivers_with_url(monkeypatch):
+def test_deliver_shoreline_lead_delivers_with_url_and_secret_header(monkeypatch):
     monkeypatch.setenv("SHORELINE_LEAD_WEBHOOK_URL", "https://example.test/leads")
+    monkeypatch.setenv("SHORELINE_LEAD_WEBHOOK_SECRET", "s3cr3t")
+    seen = {}
 
-    async def fake_post(url, payload):
+    async def fake_post(url, payload, headers):
         assert payload["consent"] is True
+        seen["headers"] = headers
         return 200
 
     res = asyncio.run(deliver_shoreline_lead(dict(ARGS), vertical=SHORELINE_VERTICAL, post_func=fake_post))
     assert res["delivered"] is True
     assert res["consent"] is True
     assert res["status_code"] == 200
+    assert seen["headers"].get("x-loopline-webhook-secret") == "s3cr3t"
+
+
+def test_auth_headers_from_env(monkeypatch):
+    monkeypatch.setenv("SHORELINE_LEAD_WEBHOOK_SECRET", "s3cr3t")
+    assert auth_headers(SHORELINE_VERTICAL["delivery"]) == {"x-loopline-webhook-secret": "s3cr3t"}
+
+
+def test_auth_headers_empty_when_unset(monkeypatch):
+    monkeypatch.delenv("SHORELINE_LEAD_WEBHOOK_SECRET", raising=False)
+    assert auth_headers(SHORELINE_VERTICAL["delivery"]) == {}
+    assert auth_headers({}) == {}
 
 
 def test_deliver_shoreline_lead_skips_when_url_unset(monkeypatch):
