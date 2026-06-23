@@ -18,18 +18,18 @@ Notes: (a) actually RECORDING calls is a small software feature I still have to 
 disclosure line goes live together with it (so we never claim to record when we don't). (b) Cross-vertical
 rule recorded: Shoreline + Septic consent wording stay unified; allowing resale later changes both + re-approval.
 
-## Task 2 — Connect the Shoreline site so I can build the lead webhook (this is MY job now)
-You reassigned the lead-receiver to me — good. I'll build a Netlify Function on the Shoreline site that
-mirrors your Septic form-lead Function: it receives Loopline's §3 lead POST and appends it to the same
-lead log with `source=phone`, then I hand you the URL to relay to Loopline.
-What I need from you (one of):
-- Connect the Shoreline site's repo/folder to me AND point me at the Septic Function as the pattern to
-  copy — then I add the Function and deploy it the way I deploy Loopline; or
-- Give me access to the Shoreline Netlify project (a Netlify connector is available).
-Why this matters: I currently only have the `loopline` folder, so I literally can't build it until the
-Shoreline site is connected. (This is NOT the old git blocker — Loopline deploys are working; production
-is live right now at 4a4ac1d.) Once it's built + deployed I set `SHORELINE_LEAD_WEBHOOK_URL` in Railway
-and POST a sample lead to confirm end to end.
+## Task 2 — Lead webhook   ✅ endpoint built by you; code wired by me; you add 2 Railway vars
+You built + tested the endpoint yourself (https://www.shorelinecost.com/.netlify/functions/loopline-lead-intake,
+header `x-loopline-webhook-secret`, §3 JSON body). I wired Loopline's delivery to send that header from an
+env var — the secret never touches git (only the env-var NAME is in config). Remaining = you add two Railway
+variables (I can't set Railway vars — no access, same as the watch-paths/Source changes you did):
+1. Railway → your project → the production app service → "Variables" tab → New Variable:
+   - `SHORELINE_LEAD_WEBHOOK_URL` = https://www.shorelinecost.com/.netlify/functions/loopline-lead-intake
+   - `SHORELINE_LEAD_WEBHOOK_SECRET` = (paste the x-loopline-webhook-secret value)
+2. Save. (Adding vars redeploys the current code — no behavior change.)
+Note: the header-sending code is on branch change/shoreline-scripts-a006 and deploys with the shoreline
+go-live bundle; a phone lead only POSTs once shoreline has a tenant+number (provisioning). So setting these
+now is prep; real end-to-end delivery is verified at the shoreline test call.
 
 ## Task 3 — Buy + point the Twilio number   ~15 min (owner-only: funding/payment)
 What: a phone number for the shoreline line, pointed at our app.
