@@ -2,6 +2,9 @@
 
 Updated: 2026-06-12 (session 5 — ALL Phase C deployed incl. complete shoreline software; shoreline DORMANT pending provisioning)
 
+## 🚨 LIVE-LINE RISK (2026-06-12): Railway trial expiring — production will PAUSE
+Owner's Railway dashboard: "0 days or $3.05 left — Upgrade to keep your services online." Railway trial = $5/30 days; the time is up. At lapse Railway PAUSES the production project **awake-happiness** (FastAPI app + Postgres, 2/2 online = the LIVE plumber phone line + tenant DB). Data is preserved; upgrading resumes. **ACTION (owner-only, payment): upgrade to Hobby ($5/mo incl. $5 usage).** Free plan ($0) NOT viable (1 project, 0.5 GB RAM). This is the top priority — ahead of shoreline; do it before any shoreline provisioning / env-var setting. (D-028, A-009.) The other project "beneficial-fascination" is empty (no services).
+
 ## ⚠️ LIVE WIRE = main
 Railway production deploys GitHub **main** (since cutover 2026-06-12 ~04:45 UTC). Any push to main that touches CODE = production deploy → requires scripted verification + per-change owner approval. **Watch Paths now set (D-013): a push touching only `ops/**` and `*.md` is deploy-inert** — ops/docs commits can be pushed without disturbing the live line. Code pushes still go through full protocol.
 

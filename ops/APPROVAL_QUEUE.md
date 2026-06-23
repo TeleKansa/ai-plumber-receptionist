@@ -1,6 +1,7 @@
 # Approval Queue
 
 ## OPEN
+- A-009 — 🚨 URGENT (live-line + spend) — **Upgrade Railway to keep production online.** Trial lapsing ("0 days / $3.05 left"); at lapse the `awake-happiness` production project (app + Postgres = the LIVE plumber line + tenant DB) PAUSES (data preserved; resumes on upgrade). Owner-only (payment): add a payment method → Hobby ($5/mo incl. $5 usage; Free $0 not viable — 1 project / 0.5 GB). Do this BEFORE shoreline provisioning and before setting the SHORELINE_LEAD_WEBHOOK_* vars (they live on this same service). (D-028)
 - A-006 — Shoreline scripts: **owner decisions made 2026-06-12** (greeting/role → "project assistant"; identity lines approved; recording = yes-with-disclosure; consent current wording OK, phone leads = direct matching, no resale; D-026). Greeting change applied on branch change/shoreline-scripts-a006. **Still OPEN: pending owner's lawyer review of consent + phone wording before go-live.** Coupled gates: recording-capture is unbuilt (disclosure ships with capture); cross-vertical consent rule with Septic recorded (resale change = both verticals + re-approval).
 
 ## CLOSED
